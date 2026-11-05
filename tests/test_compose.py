@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 
+@pytest.mark.compose
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker CLI не установлен")
 def test_compose_deployment_preserves_private_ports_and_storage(tmp_path):
     root = Path(__file__).resolve().parents[1]

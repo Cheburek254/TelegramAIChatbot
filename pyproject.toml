@@ -8,7 +8,10 @@ requires-python = ">=3.12,<3.13"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
-markers = ["integration: tests requiring Docker and PostgreSQL"]
+markers = [
+    "integration: tests requiring Docker and PostgreSQL",
+    "compose: tests requiring the Docker Compose CLI",
+]
 
 [tool.ruff]
 target-version = "py312"

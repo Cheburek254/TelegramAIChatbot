@@ -23,10 +23,11 @@ jobs:
       - run: python -m ruff check .
       - run: python -m ruff format --check .
       - run: python -m pip check
-      - run: python -m pytest -q
+      - run: python -m pytest -q -m "not compose"
       - if: runner.os == 'Linux'
         name: Проверить образ и настройки HTTPS
         run: |
+          python -m pytest -q -m compose
           docker build -t telegram-ai-chatbot:check .
           docker run --rm telegram-ai-chatbot:check python -m app --help
           docker run --rm telegram-ai-chatbot:check sh -c 'test -w /run/itmo && test -f assets/itmo-auth/login.html'
