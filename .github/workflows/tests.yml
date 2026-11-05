@@ -1,0 +1,38 @@
+name: Проверка бота
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements*.txt
+            constraints.txt
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m ruff check .
+      - run: python -m ruff format --check .
+      - run: python -m pip check
+      - run: python -m pytest -q
+      - if: runner.os == 'Linux'
+        name: Проверить образ и настройки HTTPS
+        run: |
+          docker build -t telegram-ai-chatbot:check .
+          docker run --rm telegram-ai-chatbot:check python -m app --help
+          docker run --rm telegram-ai-chatbot:check sh -c 'test -w /run/itmo && test -f assets/itmo-auth/login.html'
+          docker run --rm telegram-ai-chatbot:check node /opt/itmo/node_modules/itmo-mcp/dist/cli.js --version
+          docker run --rm -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" -e ITMO_AUTH_PUBLIC_URL=https://bot.example.com -e ITMO_AUTH_PORT=8081 caddy:2-alpine caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile
+      - if: runner.os == 'Linux'
+        run: python -m pytest -m integration -v
+        env:
+          RUN_INTEGRATION: '1'

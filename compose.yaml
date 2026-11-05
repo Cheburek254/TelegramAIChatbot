@@ -1,0 +1,74 @@
+services:
+  db:
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-bot}
+      POSTGRES_USER: ${POSTGRES_USER:-bot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Задайте POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  bot:
+    build: .
+    restart: unless-stopped
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN:?Задайте BOT_TOKEN}
+      TELEGRAM_PROXY_URL: ${TELEGRAM_PROXY_URL:-}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-bot}
+      POSTGRES_USER: ${POSTGRES_USER:-bot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Задайте POSTGRES_PASSWORD}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      HEALTH_PORT: ${HEALTH_PORT:-8080}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-${OPENROUTER_APIKEY:-}}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-nvidia/nemotron-3.5-super-vl:free}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_BASE_URL: ${GROQ_BASE_URL:-https://api.groq.com/openai/v1}
+      GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openrouter}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-30}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-1600}
+      HISTORY_MAX_MESSAGES: ${HISTORY_MAX_MESSAGES:-20}
+      HISTORY_MAX_TOKENS: ${HISTORY_MAX_TOKENS:-6000}
+      MCP_ENABLED: ${MCP_ENABLED:-1}
+      ITMO_STATE_DIR: /run/itmo
+      ITMO_AUTH_PUBLIC_URL: ${ITMO_AUTH_PUBLIC_URL:-}
+      ITMO_AUTH_PORT: ${ITMO_AUTH_PORT:-8081}
+      SUPERVISOR_ENABLED: ${SUPERVISOR_ENABLED:-1}
+      SCHEDULER_INTERVAL: ${SCHEDULER_INTERVAL:-30}
+      BRIEFING_TIMEOUT: ${BRIEFING_TIMEOUT:-50}
+      MCP_RESOURCE_TIMEZONE: ${MCP_RESOURCE_TIMEZONE:-Europe/Moscow}
+    volumes:
+      - itmo_state:/run/itmo
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.healthcheck"]
+      interval: 10s
+      timeout: 20s
+      retries: 6
+      start_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  postgres_data:
+  itmo_state:

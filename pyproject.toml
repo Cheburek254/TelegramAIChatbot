@@ -1,0 +1,18 @@
+[project]
+name = "telegram-ai-chatbot"
+version = "0.1.0"
+description = "Self-hosted Telegram AI assistant"
+requires-python = ">=3.12,<3.13"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = ["integration: tests requiring Docker and PostgreSQL"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]

@@ -1,0 +1,21 @@
+services:
+  itmo-https:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      ITMO_AUTH_PUBLIC_URL: ${ITMO_AUTH_PUBLIC_URL:?Укажите HTTPS-адрес для входа в ИТМО}
+      ITMO_AUTH_PORT: ${ITMO_AUTH_PORT:-8081}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - itmo_tls:/data
+      - itmo_proxy_config:/config
+    depends_on:
+      bot:
+        condition: service_healthy
+
+volumes:
+  itmo_tls:
+  itmo_proxy_config:

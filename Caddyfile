@@ -1,0 +1,14 @@
+{$ITMO_AUTH_PUBLIC_URL} {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+	}
+
+	@itmo path /itmo/login /itmo/session /itmo/auth.css /itmo/auth.js
+	handle @itmo {
+		reverse_proxy bot:{$ITMO_AUTH_PORT}
+	}
+
+	handle {
+		respond 404
+	}
+}
