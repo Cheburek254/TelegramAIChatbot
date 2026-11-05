@@ -25,6 +25,20 @@ def confirmation_keyboard(identity, *, prefix="reminder") -> InlineKeyboardMarku
     )
 
 
+def planner_button(label, action, kind, item):
+    return InlineKeyboardButton(
+        text=label, callback_data=f"plan:{action}:{kind}:{item['id'].hex}:{item['version']}"
+    )
+
+
+def planner_item_rows(kind, item):
+    move = planner_button("🕒 Перенести", "move", kind, item)
+    if kind == "d":
+        stop = InlineKeyboardButton(text="🔕 Отключить", callback_data=f"daily:stop:{item['id']}")
+        return [[planner_button("✅ Готово сегодня", "done", kind, item), move], [stop]]
+    return [[planner_button("✅ Готово", "done", kind, item), move]]
+
+
 def main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -92,10 +106,11 @@ def section_keyboard(section):
             ("← Назад", "schedule:put"),
         ],
         "tools": [
+            ("📌 Задачи и дедлайны", "plan:list:t:0"),
             ("📚 Учебные материалы", "features:materials"),
             ("🧭 Трасса запроса", "features:trace"),
             ("🌦 Погода", "tool:weather"),
-            ("🔔 Разовое напоминание", "tool:reminder"),
+            ("🔔 Разовые напоминания", "plan:list:r:0"),
             ("🔁 Ежедневные напоминания", "daily:menu"),
             ("🔎 Почему?", "agent:why"),
             ("← Назад", "menu"),

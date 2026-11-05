@@ -256,11 +256,14 @@ class AssistantStore:
     async def enqueue_reminders(self, now):
         await self.pool.execute(
             "INSERT INTO assistant_outbox(id,event_key,user_id,kind,due_at,deadline,"
-            "reminder_id,available_at) "
-            "SELECT r.id,'reminder:'||r.id::text,r.user_id,'reminder_delivery',r.remind_at,"
-            "r.remind_at+interval '15 minutes',r.id,r.remind_at FROM agent_reminders r "
+            "reminder_id,available_at,reminder_version) "
+            "SELECT CASE WHEN r.version=1 THEN r.id ELSE gen_random_uuid() END,"
+            "'reminder:'||r.id::text||CASE WHEN r.version=1 THEN '' ELSE ':'||r.version END,"
+            "r.user_id,'reminder_delivery',r.remind_at,"
+            "r.remind_at+interval '15 minutes',r.id,r.remind_at,r.version FROM agent_reminders r "
             "JOIN assistant_profiles p ON p.user_id=r.user_id WHERE r.remind_at<=$1 "
-            "AND p.destination_chat_id IS NOT NULL ON CONFLICT(event_key) DO NOTHING",
+            "AND p.destination_chat_id IS NOT NULL AND r.completed_at IS NULL "
+            "ON CONFLICT(event_key) DO NOTHING",
             now,
         )
 
@@ -355,16 +358,22 @@ class AssistantStore:
     async def enqueue_daily_reminder(self, reminder, due, local_date):
         await self.pool.execute(
             "INSERT INTO assistant_outbox(id,event_key,user_id,kind,due_at,deadline,"
-            "daily_reminder_id,available_at) "
-            "SELECT $1,$2,r.user_id,'daily_reminder_delivery',$3,$4,r.id,$3 "
-            "FROM assistant_daily_reminders r WHERE r.id=$5 AND r.user_id=$6 FOR SHARE OF r "
-            "ON CONFLICT(event_key) DO NOTHING",
+            "daily_reminder_id,available_at,reminder_version) "
+            "SELECT $1,$2,r.user_id,'daily_reminder_delivery',$3,$4,r.id,$3,r.version "
+            "FROM assistant_daily_reminders r WHERE r.id=$5 AND r.user_id=$6 AND r.version=$7 "
+            "FOR SHARE OF r ON CONFLICT(event_key) DO UPDATE SET due_at=excluded.due_at,"
+            "deadline=excluded.deadline,available_at=excluded.available_at,state='pending',"
+            "attempts=0,lease_until=NULL,claim_token=NULL,payload=NULL,error_code=NULL,"
+            "trace_id=NULL,reminder_version=excluded.reminder_version "
+            "WHERE assistant_outbox.state IN ('cancelled','missed','failed') "
+            "AND assistant_outbox.reminder_version<excluded.reminder_version",
             uuid.uuid4(),
             f"daily-reminder:{reminder['id']}:{local_date}",
             due,
             due + timedelta(minutes=15),
             reminder["id"],
             reminder["user_id"],
+            reminder["version"],
         )
 
     async def enqueue_briefing(self, profile, due, local_date):
@@ -457,9 +466,22 @@ class AssistantStore:
                     and row["destination_chat_id"] == event["user_id"]
                     and await conn.fetchval(
                         "SELECT EXISTS(SELECT 1 FROM assistant_daily_reminders "
-                        "WHERE user_id=$1 AND id=$2)",
+                        "WHERE user_id=$1 AND id=$2 AND version=$3)",
                         event["user_id"],
                         event["daily_reminder_id"],
+                        event["reminder_version"],
+                    )
+                )
+            elif event["kind"] == "reminder_delivery":
+                valid = (
+                    valid
+                    and row["destination_chat_id"] == event["user_id"]
+                    and await conn.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM agent_reminders WHERE user_id=$1 AND id=$2 "
+                        "AND version=$3 AND completed_at IS NULL)",
+                        event["user_id"],
+                        event["reminder_id"],
+                        event["reminder_version"],
                     )
                 )
             if not valid:
@@ -494,13 +516,17 @@ class AssistantStore:
             now if state == "sent" else None,
         )
 
-    async def reminder(self, identity):
-        return await self.pool.fetchrow("SELECT * FROM agent_reminders WHERE id=$1", identity)
+    async def reminder(self, owner, identity):
+        return await self.pool.fetchrow(
+            "SELECT * FROM agent_reminders WHERE user_id=$1 AND id=$2 AND completed_at IS NULL",
+            owner,
+            identity,
+        )
 
     async def reminders_between(self, owner, first, last):
         return await self.pool.fetch(
             "SELECT text,remind_at FROM agent_reminders WHERE user_id=$1 AND remind_at>=$2 "
-            "AND remind_at<$3 ORDER BY remind_at",
+            "AND remind_at<$3 AND completed_at IS NULL ORDER BY remind_at",
             owner,
             first,
             last,
@@ -515,6 +541,7 @@ class AssistantStore:
         )
         await self.pool.execute("DELETE FROM assistant_city_pending WHERE expires_at<$1", now)
         await self.pool.execute("DELETE FROM assistant_daily_pending WHERE expires_at<$1", now)
+        await self.pool.execute("DELETE FROM planner_actions WHERE expires_at<$1", now)
         await self.pool.execute(
             "DELETE FROM assistant_outbox WHERE kind='daily_reminder_delivery' "
             "AND deadline<$1 AND state IN ('sent','missed','failed','cancelled')",

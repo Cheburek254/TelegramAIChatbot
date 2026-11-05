@@ -12,7 +12,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from app.handlers.assistant import send_parts
 from app.material_service import HELP, MAX_FILE_BYTES, format_briefing_time
 from app.orchestration.notifications import DAILY_HELP
-from app.presentation import confirmation_keyboard, settings_keyboard
+from app.presentation import confirmation_keyboard, planner_button, settings_keyboard
 
 
 def notifications_keyboard():
@@ -85,7 +85,8 @@ def create_feature_router(notifications, supervisor, materials=None):
                     InlineKeyboardButton(
                         text=f"🔕 Отключить №{index} · {when}",
                         callback_data=f"daily:stop:{reminder['id']}",
-                    )
+                    ),
+                    planner_button("Открыть", "open", "d", reminder),
                 ]
             )
         if not reminders:

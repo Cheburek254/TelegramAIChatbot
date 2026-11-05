@@ -14,6 +14,7 @@ from app.config import ConfigError, Settings
 from app.db import create_pool
 from app.handlers.assistant import create_router
 from app.handlers.features import ContactMiddleware, create_feature_router
+from app.handlers.planner import create_planner_router
 from app.health import HealthState, start_health_server
 from app.itmo import ITMOClient
 from app.itmo_auth import ITMOAuth
@@ -31,6 +32,8 @@ from app.orchestration.notifications import Notifications
 from app.orchestration.scheduler import Scheduler
 from app.orchestration.store import AssistantStore
 from app.orchestration.supervisor import Supervisor
+from app.planner import Planner
+from app.planner_store import PlannerStore
 from app.repository import PostgresRepository
 from app.schedule_service import ScheduleService
 from app.schedule_store import ScheduleStore
@@ -133,6 +136,8 @@ async def run(settings: Settings) -> None:
                         ("briefing_time", "Время ежедневной сводки"),
                         ("notifications", "Настройки уведомлений"),
                         ("daily_reminders", "Мои ежедневные напоминания"),
+                        ("reminders", "Мои разовые напоминания"),
+                        ("tasks", "Мои задачи и дедлайны"),
                         ("trace", "Путь обработки последнего запроса"),
                     ]
                 ],
@@ -144,6 +149,11 @@ async def run(settings: Settings) -> None:
         if notifications:
             dispatcher.message.outer_middleware(ContactMiddleware(store))
             dispatcher.callback_query.outer_middleware(ContactMiddleware(store))
+            dispatcher.include_router(
+                create_planner_router(
+                    Planner(PlannerStore(state.pool), notifications, settings.mcp_resource_timezone)
+                )
+            )
             dispatcher.include_router(
                 create_feature_router(
                     notifications, agent, PersonalMaterials(MaterialStore(state.pool))

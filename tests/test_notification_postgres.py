@@ -17,6 +17,8 @@ from app.orchestration.notifications import Notifications
 from app.orchestration.scheduler import Scheduler
 from app.orchestration.store import AssistantStore
 from app.orchestration.tracing import Trace, span
+from app.planner import Planner, task_intent
+from app.planner_store import PlannerStore
 from tests.test_integration import database as database
 from tests.test_supervisor import CITY, bridge
 
@@ -290,5 +292,129 @@ async def test_daily_reminders_repeat_and_confirmed_stop_invalidates_claim(datab
         now += timedelta(days=1)
         await scheduler.tick()
         assert sender.send_message.await_count == 2
+    finally:
+        await pool.close()
+
+
+async def test_planner_tasks_briefing_and_rescheduled_reminders(database):
+    settings, *_ = database
+    pool = await create_pool(settings)
+    owner, stranger = 401, 402
+    now = datetime(2026, 11, 6, 13, tzinfo=UTC)
+    store = AssistantStore(pool)
+    planner_store = PlannerStore(pool)
+    notifications = Notifications(store, None, clock=lambda: now)
+    planner = Planner(planner_store, notifications, "Europe/Moscow", clock=lambda: now)
+    sender = Mock(send_message=AsyncMock())
+    scheduler = Scheduler(store, bridge(), sender, clock=lambda: now)
+    try:
+        await migrate(pool)
+        await migrate(pool)
+        for user in (owner, stranger):
+            await store.contact(user, user)
+            await AgentStore(pool).timezone(user, "Europe/Moscow")
+        _, task = await planner.add_task(owner, "task", task_intent("Сдать отчёт в 18:00"))
+        assert await planner_store.confirm(stranger, task, now) == ("invalid", None, None)
+        assert await planner_store.confirm(owner, task, now) == ("added", "t", task)
+        assert await planner_store.confirm(owner, task, now) == ("invalid", None, None)
+        assert not await planner_store.active(stranger, "t", 0)
+        content = await scheduler.briefing.prepare(
+            owner, {"timezone": "Europe/Moscow", "city": CITY}, now
+        )
+        assert "📌 Задачи" in content and "18:00 · Сдать отчёт" in content
+        original = await planner_store.item(owner, "t", task)
+        _, move = await planner.change(owner, "task-move", "t", original, "day")
+        _, stale = await planner.change(owner, "stale", "t", original, "done")
+        assert await planner_store.confirm(owner, move, now) == ("moved", "t", task)
+        assert await planner_store.confirm(owner, stale, now) == ("stale", "t", task)
+        moved = await planner_store.item(owner, "t", task)
+        assert moved["due_at"] == original["due_at"] + timedelta(days=1)
+        _, done = await planner.change(owner, "task-done", "t", moved, "done")
+        assert await planner_store.confirm(owner, done, now) == ("done", "t", task)
+        assert not await planner_store.briefing_tasks(owner, now + timedelta(days=3))
+
+        action, reminder = uuid.uuid4(), uuid.uuid4()
+        await pool.execute(
+            "INSERT INTO agent_pending(id,user_id,request_key,text,remind_at,timezone,"
+            "expires_at,state) "
+            "VALUES($1,$2,'one-off','Synthetic reminder',$3,'Europe/Moscow',$3,'completed')",
+            action,
+            owner,
+            now,
+        )
+        await pool.execute(
+            "INSERT INTO agent_reminders(id,action_id,user_id,text,remind_at,timezone) "
+            "VALUES($1,$2,$3,'Synthetic reminder',$4,'Europe/Moscow')",
+            reminder,
+            action,
+            owner,
+            now,
+        )
+        await scheduler.prepare_due()
+        claimed = await store.claim(now)
+        assert claimed["reminder_id"] == reminder
+        row = await planner_store.item(owner, "r", reminder)
+        _, reschedule = await planner.change(owner, "r-move", "r", row, "hour")
+        assert await planner_store.confirm(owner, reschedule, now) == ("moved", "r", reminder)
+        async with store.delivery(claimed, now) as target:
+            assert target is None
+        await scheduler.tick()
+        sender.send_message.assert_not_awaited()
+        now += timedelta(hours=1)
+        await scheduler.tick()
+        assert sender.send_message.await_count == 1
+        assert "Synthetic reminder" in sender.send_message.call_args.args[1]
+        assert (
+            sender.send_message.call_args.kwargs["reply_markup"].inline_keyboard[0][0].text
+            == "✅ Готово"
+        )
+        row = await planner_store.item(owner, "r", reminder)
+        _, done = await planner.change(owner, "r-done", "r", row, "done")
+        assert await planner_store.confirm(owner, done, now) == ("done", "r", reminder)
+        assert not await planner_store.active(owner, "r", 0)
+
+        _, series = await notifications.add_daily(owner, "daily", "add 18:00 Synthetic series")
+        assert await store.confirm_daily(owner, series, now) == "added"
+        now += timedelta(hours=1)
+        await scheduler.prepare_due()
+        old_occurrence = await store.claim(now)
+        assert old_occurrence["daily_reminder_id"] == series
+        row = await planner_store.item(owner, "d", series)
+        _, reschedule = await planner.change(owner, "d-move", "d", row, "hour")
+        assert await planner_store.confirm(owner, reschedule, now) == ("moved", "d", series)
+        async with store.delivery(old_occurrence, now) as target:
+            assert target is None
+        now += timedelta(hours=1)
+        await scheduler.tick()
+        assert sender.send_message.await_count == 2
+        assert "19:00" in sender.send_message.call_args.args[1]
+        assert (
+            await pool.fetchval(
+                "SELECT reminder_version FROM assistant_outbox "
+                "WHERE daily_reminder_id=$1 AND state='sent'",
+                series,
+            )
+            == 2
+        )
+        row = await planner_store.item(owner, "d", series)
+        _, reschedule = await planner.change(owner, "d-move-after", "d", row, "hour")
+        assert await planner_store.confirm(owner, reschedule, now) == ("moved", "d", series)
+        now += timedelta(hours=1)
+        await scheduler.tick()
+        assert sender.send_message.await_count == 2
+        now += timedelta(days=1)
+        await scheduler.tick()
+        assert sender.send_message.await_count == 3
+        assert "20:00" in sender.send_message.call_args.args[1]
+        now += timedelta(hours=23)
+        row = await planner_store.item(owner, "d", series)
+        _, done = await planner.change(owner, "d-done", "d", row, "done")
+        assert await planner_store.confirm(owner, done, now) == ("done_today", "d", series)
+        now += timedelta(hours=1)
+        await scheduler.tick()
+        assert sender.send_message.await_count == 3
+        now += timedelta(days=1)
+        await scheduler.tick()
+        assert sender.send_message.await_count == 4
     finally:
         await pool.close()

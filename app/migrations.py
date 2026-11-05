@@ -110,6 +110,7 @@ ALTER TABLE personal_schedule_actions ADD CONSTRAINT personal_schedule_actions_o
 async def migrate(pool: asyncpg.Pool) -> None:
     from app.material_store import SCHEMA as MATERIAL_SCHEMA
     from app.orchestration.store import SCHEMA as ASSISTANT_SCHEMA
+    from app.planner_store import SCHEMA as PLANNER_SCHEMA
     from app.style_store import SCHEMA as STYLE_SCHEMA
 
     async with pool.acquire() as connection, connection.transaction():
@@ -118,3 +119,4 @@ async def migrate(pool: asyncpg.Pool) -> None:
         await connection.execute(ASSISTANT_SCHEMA)
         await connection.execute(MATERIAL_SCHEMA)
         await connection.execute(STYLE_SCHEMA)
+        await connection.execute(PLANNER_SCHEMA)

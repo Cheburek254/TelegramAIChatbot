@@ -80,7 +80,13 @@ async def test_daily_reminder_menu_and_confirmation_use_private_owner():
     notifications = Mock(
         list_daily=AsyncMock(
             return_value=[
-                {"id": series, "minute": 1140, "timezone": "Europe/Moscow", "text": "Read"}
+                {
+                    "id": series,
+                    "version": 1,
+                    "minute": 1140,
+                    "timezone": "Europe/Moscow",
+                    "text": "Read",
+                }
             ]
         ),
         add_daily=AsyncMock(return_value=("Add?", proposal)),

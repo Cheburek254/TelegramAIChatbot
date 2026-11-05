@@ -10,6 +10,7 @@ from aiogram.exceptions import (
     TelegramRetryAfter,
     TelegramServerError,
 )
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.context import split_telegram
 from app.material_contracts import SearchOutput
@@ -18,6 +19,8 @@ from app.orchestration.contracts import City
 from app.orchestration.policy import PolicyBridge
 from app.orchestration.store import decode
 from app.orchestration.tracing import Trace, span
+from app.planner_store import PlannerStore
+from app.presentation import planner_item_rows
 from app.timezones import zone
 
 
@@ -44,6 +47,7 @@ def daily_reminder_times(reminder, first, last):
         instant = due.astimezone(UTC)
         if (
             due.date() == local_date
+            and local_date != reminder.get("skip_on")
             and first <= instant <= last
             and instant > reminder["starts_at"]
         ):
@@ -125,6 +129,20 @@ class BriefingService:
                 f"{data.source} · {data.observed_at}"
             )
 
+        async def tasks():
+            end = datetime.combine(local.date() + timedelta(days=1), time(), zone(timezone))
+            rows = await PlannerStore(self.store.pool).briefing_tasks(owner, end)
+            lines = []
+            for row in rows:
+                due = row["due_at"]
+                if due:
+                    due = due.astimezone(zone(timezone))
+                    label = f"{due:%d.%m %H:%M} · " + ("просрочено · " if due < local else "")
+                else:
+                    label = "Без срока · "
+                lines.append(label + row["text"])
+            return "\n".join(lines) or "Нет открытых задач на сегодня."
+
         async def knowledge():
             policy = PolicyBridge(self.bridge, "knowledge", readonly=True)
             await policy.resource("materials://catalog")
@@ -142,11 +160,12 @@ class BriefingService:
         for component, name, operation in [
             ("schedule", "📅 Занятия", schedule),
             ("schedule", "🔔 Напоминания", reminders),
+            ("schedule", "📌 Задачи", tasks),
             ("lifestyle", "🌦 Погода", weather),
             ("knowledge", "📚 Учебный фокус", knowledge),
         ]:
             value = await section(component, operation)
-            parts = split_telegram(value, limit=800)
+            parts = split_telegram(value, limit=720)
             sections.append(name + "\n" + parts[0] + ("…" if len(parts) > 1 else ""))
         return (
             f"☀️ Ежедневная сводка · {local:%d.%m.%Y}\n"
@@ -182,18 +201,22 @@ class Scheduler:
         ) as trace:
             try:
                 profile = await self.store.profile(event["user_id"])
+                send_options = {"parse_mode": None}
                 if event["kind"] in {"reminder_delivery", "daily_reminder_delivery"}:
                     daily = event["kind"] == "daily_reminder_delivery"
                     if daily:
                         reminder = await self.store.daily_reminder(
                             event["user_id"], event["daily_reminder_id"]
                         )
-                        if not reminder:
-                            async with self.store.delivery(event, self.clock()):
-                                pass
-                            return True
                     else:
-                        reminder = await self.store.reminder(event["reminder_id"])
+                        reminder = await self.store.reminder(event["user_id"], event["reminder_id"])
+                    if not reminder or reminder["version"] != event["reminder_version"]:
+                        async with self.store.delivery(event, self.clock()):
+                            pass
+                        return True
+                    send_options["reply_markup"] = InlineKeyboardMarkup(
+                        inline_keyboard=planner_item_rows("d" if daily else "r", reminder)
+                    )
                     local = event["due_at"].astimezone(zone(reminder["timezone"]))
                     label = "Ежедневное напоминание" if daily else "Напоминание"
                     text = (
@@ -214,6 +237,15 @@ class Scheduler:
                     text = event["payload"] or await self.briefing.prepare(
                         event["user_id"], profile, self.clock()
                     )
+                    send_options["reply_markup"] = InlineKeyboardMarkup(
+                        inline_keyboard=[
+                            [
+                                InlineKeyboardButton(
+                                    text="📌 Открыть задачи", callback_data="plan:list:t:0"
+                                )
+                            ]
+                        ]
+                    )
                 if not await self.store.payload(event, text, trace.id):
                     return True
                 async with self.store.delivery(event, self.clock()) as target:
@@ -224,7 +256,7 @@ class Scheduler:
                                 asyncio.timeout(20),
                                 span("telegram", "delivery", intent=event["kind"]),
                             ):
-                                await self.sender.send_message(destination, text, parse_mode=None)
+                                await self.sender.send_message(destination, text, **send_options)
                         except (TelegramForbiddenError, TelegramBadRequest):
                             await self.store.complete(
                                 event,
