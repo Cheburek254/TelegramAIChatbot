@@ -11,7 +11,7 @@ from app.itmo import ITMOError
 from app.planner import DAILY_PATTERN, MOVE_CHOICES, repeat_task_intent, task_intent, when_text
 from app.planner_store import PAGE_SIZE
 from app.presentation import confirmation_keyboard, draft_button, planner_button, planner_item_rows
-from app.study_planning import FREE_HELP, FREE_PREFIX, free_query
+from app.study_planning import FREE_HELP, FREE_INTENT, FREE_PREFIX, free_query
 from app.timezones import zone
 
 TITLES = {"t": "📌 Задачи и дедлайны", "r": "🔔 Разовые напоминания"}
@@ -42,16 +42,19 @@ RESULT = {
 def text_intent(message: Message):
     if not message.text or getattr(message, "forward_origin", None):
         return False
-    daily = DAILY_PATTERN.fullmatch(message.text.strip())
+    text = message.text.strip()
+    daily = DAILY_PATTERN.fullmatch(text)
     if daily:
         return {"intent": ("d", f"add {daily[1]} {daily[2]}")}
-    repeat = repeat_task_intent(message.text)
+    repeat = repeat_task_intent(text)
     if repeat:
         return {"intent": ("repeat", repeat)}
-    free = FREE_PREFIX.match(message.text.strip())
-    if free and (args := free_query(message.text.strip()[free.end() :])):
+    free = FREE_PREFIX.match(text)
+    if free and (args := free_query(text[free.end() :])):
         return {"intent": ("free", args)}
-    task = task_intent(message.text)
+    if FREE_INTENT.match(text):
+        return {"intent": ("free", None)}
+    task = task_intent(text)
     return {"intent": ("t", task)} if task else False
 
 

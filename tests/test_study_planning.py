@@ -4,9 +4,14 @@ import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, Mock
 
+import pytest
+from aiogram import Bot, Dispatcher, Router
+from aiogram.types import Chat, Message, Update, User
+
+from app.handlers.planner import create_planner_router
 from app.itmo_watch import changes
 from app.planner import Planner, repeat_task_intent
-from app.study_planning import StudyPlanning, free_query, free_windows
+from app.study_planning import FREE_HOURS, StudyPlanning, free_deadline, free_query, free_windows
 from app.timezones import next_task_due
 
 
@@ -29,6 +34,61 @@ def test_free_slots_merge_busy_intervals_convert_zone_and_respect_cutoff():
         (8, 45, 10, 15),
         (13, 15, 14, 45),
     ]
+
+
+def test_next_week_is_calendar_week_in_users_timezone():
+    now = datetime(2026, 11, 8, 22, tzinfo=UTC)  # Monday 01:00 in Moscow
+    _, cutoff, _ = free_query("90 до следующей пятницы в 18:00")
+    assert free_deadline(cutoff, now, "Europe/Moscow") == datetime(2026, 11, 20, 15, tzinfo=UTC)
+    assert free_deadline(cutoff, now, "UTC") == datetime(2026, 11, 13, 18, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    "text,last",
+    [
+        ("/free 90 до пятницы следующей недели", 13),
+        ("Найди мне 90 минут до следующей пятницы?", 13),
+        (f"/free 90 до пятницы. {FREE_HOURS}", 6),
+        (FREE_HOURS, None),
+    ],
+)
+async def test_free_telegram_routes_to_itmo_or_asks_duration(text, last):
+    now = datetime(2026, 11, 6, 10, tzinfo=UTC)
+    planner = Mock(
+        clock=lambda: now,
+        zone_for=AsyncMock(return_value="Europe/Moscow"),
+        store=Mock(proposal=AsyncMock(return_value="synthetic-id")),
+    )
+    itmo = Mock(connected=lambda owner: True, fetch=AsyncMock(return_value=[]))
+    llm = Mock()
+    study = StudyPlanning(planner, None, itmo, llm, 6000)
+    dispatcher = Dispatcher()
+    dispatcher.include_router(create_planner_router(planner, study=study))
+    fallback = Router()
+
+    @fallback.message()
+    async def general(message):
+        pytest.fail(f"Free-window request reached the general assistant: {message.text}")
+
+    dispatcher.include_router(fallback)
+    bot = Bot("123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk")
+    bot.session = AsyncMock()
+    message = Message(
+        message_id=1,
+        date=now,
+        chat=Chat(id=123, type="private"),
+        from_user=User(id=123, is_bot=False, first_name="Test"),
+        text=text,
+    )
+    await dispatcher.feed_update(bot, Update(update_id=1, message=message))
+    llm.complete.assert_not_called()
+    answer = bot.session.call_args.args[1].text
+    if last is None:
+        itmo.fetch.assert_not_called()
+        assert "Сколько минут" in answer
+    else:
+        itmo.fetch.assert_awaited_once_with(123, now.date(), now.date().replace(day=last))
+        assert f"До {last:02d}.11.2026 23:59" in answer
 
 
 async def test_recurring_task_parsing_and_calendar_recurrence():

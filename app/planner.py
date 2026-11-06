@@ -18,9 +18,12 @@ REPEAT_TASK = re.compile(
     re.I,
 )
 WEEKDAYS = ("понедельник", "вторник", "сред", "четверг", "пятниц", "суббот", "воскресенье")
+WEEKDAY = (
+    r"понедельник(?:а)?|вторник(?:а)?|сред[уыа]|четверг(?:а)?|"
+    r"пятниц[уыа]|суббот[уыа]|воскресень[ея]"
+)
 DAY = (
-    r"послезавтра|завтра|сегодня|понедельник(?:а)?|вторник(?:а)?|сред[уыа]|четверг(?:а)?|"
-    r"пятниц[уыа]|суббот[уыа]|воскресень[ея]|[0-9]{4}-[0-9]{2}-[0-9]{2}|"
+    rf"послезавтра|завтра|сегодня|{WEEKDAY}|[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}|"
     r"[0-9]{1,2}\.[0-9]{1,2}(?:\.[0-9]{4})?"
 )
 DEADLINE = re.compile(
@@ -75,6 +78,10 @@ def repeat_task_intent(text):
     return (title, timing), 1 if period == "день" else 7
 
 
+def weekday_number(day):
+    return next(n for n, stem in enumerate(WEEKDAYS) if day.startswith(stem[:8]))
+
+
 def local_due(match, now, timezone):
     local = now.astimezone(zone(timezone))
     today = local.date()
@@ -89,7 +96,7 @@ def local_due(match, now, timezone):
         day_number, month, *year = map(int, raw_day.split("."))
         day = date(year[0] if year else today.year, month, day_number)
     else:
-        weekday = next(n for n, stem in enumerate(WEEKDAYS) if raw_day.startswith(stem[:8]))
+        weekday = weekday_number(raw_day)
         day = today + timedelta(days=(weekday - today.weekday()) % 7)
         if datetime.combine(day, clock) <= local.replace(tzinfo=None):
             day += timedelta(days=7)

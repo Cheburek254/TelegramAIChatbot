@@ -9,25 +9,34 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from app.agent import fit_messages
 from app.context import ContextTooLarge
 from app.llm import LLMError
-from app.planner import DAY, MOVE_WHEN, local_due
+from app.planner import DAY, MOVE_WHEN, WEEKDAY, local_due, weekday_number
 from app.schedule_store import SOURCE, lesson_payload
 from app.timezones import local_candidates, zone
 
-FREE_PREFIX = re.compile(
-    r"^(?:найди|подбери|покажи)\s+(?:мне\s+)?"
-    r"(?:(?:свободное\s+)?(?:окно|время)\s+(?:на\s+)?)?",
+FREE_WORDS = r"(?:свободн(?:ое\s+(?:окно|время)|ые\s+окна)|окн[оа])"
+FREE_VERB = r"(?:найди|подбери|покажи|ищу)\s+(?:мне\s+)?"
+FREE_PREFIX = re.compile(rf"^{FREE_VERB}(?:{FREE_WORDS}\s+(?:на\s+)?)?", re.I)
+FREE_INTENT = re.compile(
+    rf"^(?:{FREE_VERB}{FREE_WORDS}|какие\s+(?:у меня\s+)?(?:есть\s+)?свободные\s+окна)\b",
     re.I,
 )
+NEXT_WEEK_DAY = (
+    rf"(?:следующ(?:его|ей)\s+(?P<prefix>{WEEKDAY})|"
+    rf"(?P<suffix>{WEEKDAY})\s+следующей\s+недели)"
+)
+CLOCK = r"[0-9]{1,2}:[0-9]{2}"
+NEXT_WEEK_CUTOFF = re.compile(rf"{NEXT_WEEK_DAY}\s+(?P<clock>{CLOCK})", re.I)
 FREE_ARGUMENT = re.compile(
     rf"^(?P<duration>полтора часа|два часа|час|[0-9]{{1,3}}(?:\s*"
     rf"(?:минут(?:у|ы)?|мин\.?|час(?:а|ов)?|ч\.?))?)"
-    rf"(?:\s+до\s+(?P<day>{DAY})(?:\s+(?:в\s+)?(?P<time>[0-9]{{1,2}}:[0-9]{{2}}))?)?"
-    rf"(?:[, ]+\s*(?:чтобы|для)\s+(?P<title>.+))?$",
+    rf"(?:\s+до\s+(?P<day>{NEXT_WEEK_DAY}|{DAY})(?:\s+(?:в\s+)?(?P<time>{CLOCK}))?)?"
+    r"(?:[, ]+\s*(?:чтобы|для)\s+(?P<title>.+))?[.!?]?$",
     re.I,
 )
+FREE_HOURS = "Ищу окна с 09:00 до 21:00 в ближайшие 14 дней."
 FREE_HELP = (
-    "🔎 Укажите длительность и срок, например /free 90 до пятницы. "
-    "Ищу окна с 09:00 до 21:00 в ближайшие 14 дней."
+    "🔎 Сколько минут нужно на одно окно? Укажите от 15 до 480 минут. Срок можно добавить.\n\n"
+    "/free 90 до пятницы следующей недели\n\n" + FREE_HOURS
 )
 
 
@@ -44,7 +53,7 @@ class ForwardTasks(BaseModel):
 
 
 def free_query(text):
-    match = FREE_ARGUMENT.fullmatch(text.strip())
+    match = FREE_ARGUMENT.fullmatch(text.strip().removesuffix(FREE_HOURS).strip())
     if not match:
         return None
     raw = match["duration"].lower()
@@ -54,6 +63,15 @@ def free_query(text):
         minutes = {"час": 60, "полтора часа": 90, "два часа": 120}[raw]
     cutoff = f"{match['day']} {match['time'] or '23:59'}" if match["day"] else None
     return (minutes, cutoff, match["title"]) if 15 <= minutes <= 480 else None
+
+
+def free_deadline(cutoff, now, timezone):
+    if following := NEXT_WEEK_CUTOFF.fullmatch(cutoff):
+        today = now.astimezone(zone(timezone)).date()
+        weekday = weekday_number((following["prefix"] or following["suffix"]).lower())
+        day = today + timedelta(days=7 - today.weekday() + weekday)
+        cutoff = f"{day} {following['clock']}"
+    return local_due(MOVE_WHEN.fullmatch(cutoff), now, timezone)
 
 
 def free_windows(entries, lesson_zone, user_zone, first, last, minutes):
@@ -101,7 +119,7 @@ class StudyPlanning:
         until = None
         if cutoff:
             try:
-                until = local_due(MOVE_WHEN.fullmatch(cutoff), now, timezone)
+                until = free_deadline(cutoff, now, timezone)
             except (ValueError, OverflowError):
                 return "Укажите будущую дату, до которой нужно найти окно.", []
         if title and "\0" not in title:
@@ -128,7 +146,8 @@ class StudyPlanning:
                 for row in await self.schedule.entries(owner, start_day, last_day)
             ]
             source = SOURCE
-        rows, buttons = [f"🔎 Свободные окна · {timezone}", source], []
+        rows = [f"🔎 Свободные окна · {timezone}\nДо {until.astimezone(tz):%d.%m.%Y %H:%M}", source]
+        buttons = []
         for index, (start, end) in enumerate(
             free_windows(entries, lesson_zone, timezone, first, until, minutes)
         ):
