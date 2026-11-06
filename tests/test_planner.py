@@ -112,6 +112,12 @@ async def test_telegram_task_and_daily_routes_and_buttons():
     alarm = await send(task_alert + "45")
     assert "за 45 мин." in alarm.text
     assert store.proposal.call_args.kwargs["minute"] == 45
+    item["remind_at"] = item["due_at"]
+    reminder_move = await press(f"plan:move:r:{identity.hex}:1")
+    exact_reminder = draft(reminder_move.reply_markup.inline_keyboard[0][0])
+    result = await send(exact_reminder + "2026-11-08 20:30")
+    assert "08.11.2026 20:30" in result.text
+    assert store.proposal.call_args.args[-2:] == ("r", "move")
     item.update(minute=1140, skip_on=None)
     reminder_move = await press(f"plan:move:d:{identity.hex}:1")
     exact_daily = draft(reminder_move.reply_markup.inline_keyboard[0][0])

@@ -154,11 +154,9 @@ class Planner:
                     else "Укажите будущие дату и время, например 2026-11-20 18:30."
                 )
                 return hint, None
-            label = when_text(kind, {"minute": minute, "timezone": timezone, "due_at": due})
         elif kind == "d":
             minute = (item["minute"] + (60 if option == "hour" else -60)) % 1440
             due = None
-            label = when_text(kind, {"minute": minute, "timezone": timezone})
         else:
             minute = None
             current = item["due_at" if kind == "t" else "remind_at"]
@@ -174,13 +172,15 @@ class Planner:
                 if len(candidates) != 1:
                     return "В новой дате это время неоднозначно. Выберите другой перенос.", None
                 due = candidates[0].astimezone(UTC)
-            label = when_text("t", {"due_at": due, "timezone": timezone})
         lead = item.get("notify_before") if kind == "t" else None
         if lead and due <= now + timedelta(minutes=lead):
             return (
                 f"До нового срока меньше {lead} мин. Измените оповещение или выберите срок позже.",
                 None,
             )
+        label = when_text(
+            "d" if kind == "d" else "t", {"minute": minute, "timezone": timezone, "due_at": due}
+        )
         pending = await self.store.proposal(
             owner,
             key,
