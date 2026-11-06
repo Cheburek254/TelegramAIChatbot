@@ -284,3 +284,26 @@ async def test_bridge_discovery_validation_and_disconnect():
         await bridge.close()
     with pytest.raises(MCPFailure, match="mcp_unavailable"):
         await bridge.call("get_schedule", {"date": "2026-10-12"})
+
+
+async def test_bad_tool_result_leaves_other_tools_available(monkeypatch):
+    from mcp import ClientSession, types
+
+    original = ClientSession.call_tool
+
+    async def one_bad_result(self, name, *args, **kwargs):
+        if name == "get_weather":
+            return types.CallToolResult(content=[], structuredContent={"invalid": True})
+        return await original(self, name, *args, **kwargs)
+
+    monkeypatch.setattr(ClientSession, "call_tool", one_bad_result)
+    settings = Settings(bot_token="unused", postgres_password="unused")
+    bridge = MCPBridge(settings, "test-context-secret")
+    try:
+        assert await bridge.start()
+        with pytest.raises(MCPFailure, match="mcp_invalid_result"):
+            await bridge.call("get_weather", {"city": "Тест"})
+        assert (await bridge.call("search_materials", {"query": "MCP"}))["status"] == "ok"
+        assert bridge.available
+    finally:
+        await bridge.close()

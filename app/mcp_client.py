@@ -8,10 +8,11 @@ import uuid
 from datetime import timedelta
 
 from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError as SchemaValidationError
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 from mcp.shared.exceptions import McpError
-from pydantic import AnyUrl
+from pydantic import AnyUrl, ValidationError
 
 from app.material_contracts import Catalog
 from app.mcp_service.auth import sign
@@ -54,6 +55,7 @@ class MCPBridge:
                 "POSTGRES_DB",
                 "POSTGRES_USER",
                 "POSTGRES_PASSWORD",
+                "MCP_SCHEDULE_PATH",
                 "MCP_RESOURCE_TIMEZONE",
             )
         }
@@ -101,7 +103,9 @@ class MCPBridge:
                             name, arguments, meta = payload
                             result = await session.call_tool(name, arguments, meta=meta)
                             if result.isError:
-                                code = result.content[0].text if result.content else "tool_error"
+                                code = (
+                                    getattr(result.content[0], "text", "") if result.content else ""
+                                )
                                 if code not in ITMO_ERRORS | {
                                     "trusted_context_required",
                                     "confirmation_required",
@@ -131,12 +135,19 @@ class MCPBridge:
                                 types.ReadResourceResult,
                             )
                             model = Catalog if uri == "materials://catalog" else WeekOutput
+                            if not result.contents or not isinstance(
+                                result.contents[0], types.TextResourceContents
+                            ):
+                                raise MCPFailure("mcp_invalid_result")
                             data = model.model_validate_json(result.contents[0].text).model_dump()
                         if not current.done():
                             current.set_result(data)
                     except MCPFailure as exc:
                         if not current.done():
                             current.set_exception(exc)
+                    except (SchemaValidationError, ValidationError):
+                        if not current.done():
+                            current.set_exception(MCPFailure("mcp_invalid_result"))
                     except McpError as exc:
                         code = exc.error.message
                         if not current.done():

@@ -9,13 +9,20 @@ from datetime import UTC, datetime, timedelta
 
 from pydantic import ValidationError
 
-from app.agent import Agent, AgentReply, fit_messages
+from app.agent import SAFE_ERRORS, Agent, AgentReply, fit_messages, render_schedule
 from app.agent_store import AgentStore
 from app.assistant import Assistant
 from app.context import ContextTooLarge
+from app.llm import LLMError
 from app.material_contracts import Catalog, SearchOutput
 from app.mcp_client import MCPFailure
-from app.mcp_service.contracts import ScheduleOutput, TasksOutput, WeatherOutput, WeekOutput
+from app.mcp_service.contracts import (
+    ReminderInput,
+    ScheduleOutput,
+    TasksOutput,
+    WeatherOutput,
+    WeekOutput,
+)
 from app.orchestration.contracts import (
     AgentRequest,
     AgentResult,
@@ -30,7 +37,18 @@ from app.orchestration.contracts import (
 from app.orchestration.geography import DEFAULT_CITY
 from app.orchestration.policy import PolicyBridge
 from app.orchestration.store import decode
+from app.orchestration.tool_routes import (
+    MATERIAL_CATALOG,
+    MATERIAL_SEARCH,
+    NEXT_WEEK,
+    normalized,
+    schedule_day,
+    schedule_query,
+    schedule_scope,
+    tasks_scope,
+)
 from app.orchestration.tracing import Trace, TracedLLM, span
+from app.planner import DAY, MOVE_WHEN, local_due
 from app.response_style import enforce_style, styled_prompt
 from app.timezones import zone
 
@@ -58,7 +76,8 @@ reason — краткое название основания, не скрыты
 TASKS_HEADING = "📌 Задачи и дедлайны"
 WEATHER_REQUEST = re.compile(
     r"(?:какая\s+(?:(?:сейчас|сегодня)\s+)?погода|(?:текущая\s+)?погода|"
-    r"что\s+с\s+погодой|(?:покажи|узнай)\s+погоду)(?:\s+(?:сейчас|сегодня))?"
+    r"что\s+с\s+погодой|(?:что|шо)\s+по\s+погоде|(?:покажи|узнай)\s+погоду)"
+    r"(?:\s+(?:сейчас|сегодня))?"
     r"(?:\s+(?:(?:в|во|на)\s+)?(?P<city>[^\W\d_]+(?:[ ,.'’‑–-]+[^\W\d_]+)*))?[?!.]*",
     re.IGNORECASE,
 )
@@ -108,15 +127,47 @@ KNOWLEDGE_PROMPT = """Отвечай исключительно по предо�
 """
 
 
+REMINDER_PREFIX = re.compile(
+    r"^(?:пожалуйста[, ]+)?(?:напомни\b|(?:можешь|можно)\s+(?:мне\s+)?напомнить\b|"
+    r"(?:создай|добавь|поставь)\s+(?:мне\s+)?напоминание\b)(?:\s+мне\b)?",
+    re.I,
+)
+REMINDER_DATE = re.compile(
+    rf"(?:на\s+)?(?:(?P<day>{DAY})\s+)?(?:в\s+)?"
+    r"(?P<clock>[0-9]{1,2}:[0-9]{2})(?:[\s,:–—-]+)(?P<body>\S.{0,499})",
+    re.I,
+)
+TOOL_UNAVAILABLE = {
+    "schedule": "Расписание сейчас недоступно. Попробуйте позже.",
+    "tasks": "Задачи сейчас недоступны. Попробуйте позже.",
+    "knowledge": "Учебные материалы сейчас недоступны. Попробуйте позже.",
+    "lifestyle": "Погода временно недоступна. Попробуйте позже.",
+}
+
+
 def explicit_reminder(text):
-    text = text.strip().lower()
-    return bool(
-        re.match(
-            r"^(?:пожалуйста[, ]+)?(?:напомни\b|(?:можешь|можно)\s+(?:мне\s+)?напомнить\b|"
-            r"(?:создай|добавь|поставь)\s+(?:мне\s+)?напоминание\b)",
-            text,
+    return bool(REMINDER_PREFIX.match(text.strip()))
+
+
+def explicit_route(text):
+    if current_weather_city(text) is not None:
+        target, intent, scope, reason = "lifestyle", "read", "default", "explicit_current_weather"
+    elif query := schedule_query(text):
+        target, intent, scope, reason = (
+            "schedule",
+            "read",
+            schedule_scope(query),
+            "explicit_schedule",
         )
-    )
+    elif scope := tasks_scope(text):
+        target, intent, reason = "tasks", "read", "explicit_deadlines"
+    elif explicit_reminder(text):
+        target, intent, scope, reason = "schedule", "reminder", "default", "explicit_reminder"
+    elif MATERIAL_CATALOG.fullmatch(normalized(text)) or MATERIAL_SEARCH.match(normalized(text)):
+        target, intent, scope, reason = "knowledge", "read", "default", "explicit_materials"
+    else:
+        return None
+    return RouteDecision(target=target, intent=intent, scope=scope, confidence=1.0, reason=reason)
 
 
 def current_weather_city(text):
@@ -169,29 +220,11 @@ class Supervisor:
         self.base = Agent(settings, AgentStore(store.pool), assistant.llm, bridge, clock=self.clock)
         self.legacy = Assistant(settings, assistant.repository, TracedLLM(assistant.llm, "legacy"))
 
-    async def route(self, text):
+    async def route(self, text, known=None):
         async with span("router", "route") as attrs:
-            if current_weather_city(text) is not None:
-                attrs["target"] = "lifestyle"
-                return RouteDecision(
-                    target="lifestyle",
-                    intent="read",
-                    scope="default",
-                    confidence=1.0,
-                    reason="explicit_current_weather",
-                )
-            if re.fullmatch(
-                r"(?:какие |покажи )?(?:у меня |мои )?ближайшие дедлайны(?: у меня)?[?!.]?",
-                text.strip().lower(),
-            ):
-                attrs["target"] = "tasks"
-                return RouteDecision(
-                    target="tasks",
-                    intent="read",
-                    scope="upcoming",
-                    confidence=1.0,
-                    reason="explicit_deadlines",
-                )
+            if decision := known or explicit_route(text):
+                attrs["target"] = decision.target
+                return decision
             completion = await TracedLLM(self.assistant.llm, "router").complete(
                 fit_messages(
                     [
@@ -223,6 +256,16 @@ class Supervisor:
 
     async def knowledge(self, request, policy, speech_style="default"):
         catalog = Catalog.model_validate(await policy.resource("materials://catalog"))
+        if MATERIAL_CATALOG.fullmatch(normalized(request.text)):
+            return AgentResult(
+                status="success",
+                message="📚 Учебные материалы\n\n"
+                + "\n".join(f"• {doc.title} [{doc.doc_id}]" for doc in catalog.documents),
+                confidence=1.0,
+                facts=EmptyFacts(),
+                used_tools=[],
+                error_code=None,
+            )
         data = SearchOutput.model_validate(
             await policy.call("search_materials", {"query": request.text[:500], "limit": 5})
         )
@@ -269,20 +312,19 @@ class Supervisor:
                 if len(data.hits) <= 1:
                     raise
                 data = data.model_copy(update={"hits": data.hits[:-1]})
-        completion = await TracedLLM(self.assistant.llm, "knowledge").complete(
-            messages,
-            0.0,
-            str(request.request_id),
-            tools=[],
-        )
-        completion = await enforce_style(
-            completion,
-            TracedLLM(self.assistant.llm, "knowledge"),
-            style=speech_style,
-            budget=self.settings.history_max_tokens,
-            temperature=0.0,
-        )
-        message = completion.content[:18000]
+        llm = TracedLLM(self.assistant.llm, "knowledge")
+        try:
+            completion = await llm.complete(messages, 0.0, str(request.request_id), tools=[])
+            completion = await enforce_style(
+                completion,
+                llm,
+                style=speech_style,
+                budget=self.settings.history_max_tokens,
+                temperature=0.0,
+            )
+            message = completion.content[:18000]
+        except LLMError:
+            message = ""
         # A citation is checked against actual search hits; fallback contains only
         # returned excerpts, never an unsupported model answer.
         citations = set(re.findall(r"\[([\w-]+)\]", message))
@@ -356,6 +398,42 @@ class Supervisor:
                     used_tools=list(policy.calls),
                     error_code=None,
                 ), None
+            query = schedule_query(request.text) if decision.target == "schedule" else None
+            if query and re.fullmatch(NEXT_WEEK, query):
+                return AgentResult(
+                    status="needs_clarification",
+                    message="Для следующей недели укажите день или конкретную дату.",
+                    confidence=1.0,
+                    facts=EmptyFacts(),
+                    used_tools=[],
+                    error_code=None,
+                ), None
+            if query and decision.scope == "day":
+                try:
+                    today = request.occurred_at.astimezone(zone(request.timezone)).date()
+                    value = schedule_day(query, today).isoformat()
+                except ValueError:
+                    return AgentResult(
+                        status="needs_clarification",
+                        message="Проверьте дату. Пример: «Какие у меня пары 2 ноября?»",
+                        confidence=1.0,
+                        facts=EmptyFacts(),
+                        used_tools=[],
+                        error_code=None,
+                    ), None
+                data = ScheduleOutput.model_validate(
+                    await policy.call("get_schedule", {"date": value})
+                )
+                if data.date != value:
+                    raise MCPFailure("mcp_invalid_result")
+                return AgentResult(
+                    status="success",
+                    message=render_schedule([data]),
+                    confidence=1.0,
+                    facts=ScheduleFacts(data=data),
+                    used_tools=list(policy.calls),
+                    error_code=None,
+                ), None
             if (
                 decision.target == "schedule"
                 and decision.scope == "week"
@@ -394,6 +472,11 @@ class Supervisor:
                     used_tools=[],
                     error_code=None,
                 ), None
+            if decision.target == "schedule" and decision.intent == "reminder":
+                prefix = REMINDER_PREFIX.match(request.text.strip())
+                match = REMINDER_DATE.fullmatch(request.text.strip()[prefix.end() :].strip())
+                if match:
+                    return await self.prepare_reminder(request, match, policy)
             profile = await self.store.profile(request.actor_id)
             city = decode(profile["city"]) if profile and profile["city"] else None
             instruction = (
@@ -434,6 +517,36 @@ class Supervisor:
             )
             return result, reply.pending_id
 
+    async def prepare_reminder(self, request, match, policy):
+        timezone = await self.base.store.timezone(request.actor_id)
+        pending = None
+        if not timezone:
+            message = SAFE_ERRORS["timezone_required"]
+        else:
+            date_time = MOVE_WHEN.fullmatch(f"{match['day'] or 'сегодня'} {match['clock']}")
+            try:
+                moment = local_due(date_time, request.occurred_at, timezone).astimezone(
+                    zone(timezone)
+                )
+            except ValueError:
+                message = "Укажите однозначные будущие дату и время напоминания."
+            else:
+                args = ReminderInput(text=match["body"], remind_at=moment.isoformat()).model_dump()
+                policy.validate("add_reminder", args)
+                async with self.base.store.request(
+                    request.actor_id, "supervisor:" + str(request.request_id)
+                ) as unit:
+                    card = await self.base.reminder_card(unit, args, timezone, moment)
+                message, pending = card.content, card.pending_id
+        return AgentResult(
+            status="success" if pending else "needs_clarification",
+            message=message,
+            confidence=1.0,
+            facts=EmptyFacts(),
+            used_tools=[],
+            error_code=None,
+        ), pending
+
     async def respond(self, owner, text, key):
         async with self.capacity, self.store.guard(owner):
             cached = await self.store.cached(owner, key)
@@ -443,15 +556,13 @@ class Supervisor:
                 async with span("supervisor", "request"):
                     async with self.assistant.repository.session(owner) as conversation:
                         profile = await conversation.profile()
-                    if (
-                        profile.mode in {"translate", "review"}
-                        and current_weather_city(text) is None
-                    ):
+                    known = explicit_route(text)
+                    if profile.mode in {"translate", "review"} and known is None:
                         async with span("legacy", "dialogue"):
                             completion = await self.legacy.respond(owner, text)
                         reply = AgentReply(completion.content)
                     else:
-                        decision = await self.route(text)
+                        decision = await self.route(text, known)
                         if decision.target == "clarify":
                             reply = AgentReply(
                                 "Вы таки уточните, шо вас интересует: расписание, задачи, "
@@ -497,7 +608,10 @@ class Supervisor:
                             except (MCPFailure, ValidationError, ValueError):
                                 trace.status = "failed"
                                 reply = AgentReply(
-                                    "Не удалось получить проверенные данные. Попробуйте позже."
+                                    TOOL_UNAVAILABLE.get(
+                                        decision.target,
+                                        "Не удалось получить проверенные данные. Попробуйте позже.",
+                                    )
                                 )
                     reply = AgentReply(reply.content, reply.pending_id, trace.id)
                     await self.store.save_reply(owner, key, reply, trace.id)

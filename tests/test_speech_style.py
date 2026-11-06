@@ -128,7 +128,7 @@ async def test_router_unchanged_knowledge_styled_and_schedule_facts_not_rewritte
     assistant = Assistant(Settings(bot_token="unused", postgres_password="unused"), repository, llm)
     raw = bridge()
     service = Supervisor(assistant.settings, MemoryAssistantStore(), assistant, raw)
-    await service.route("Объясни по конспекту MCP")
+    await service.route("Как материал про MCP объясняет контракт?")
     assert llm.complete.call_args.args[0][0]["content"] == ROUTER_PROMPT
     raw.call.return_value = {
         "status": "ok",

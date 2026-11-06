@@ -257,7 +257,8 @@ def test_current_weather_shortcut_ignores_mode_requests_and_forecasts(text):
     assert current_weather_city(text) is None
 
 
-async def test_natural_deadlines_query_reads_only_signed_mcp_and_shows_exact_facts():
+@pytest.mark.parametrize("mode", ["study", "translate", "review"])
+async def test_natural_deadlines_query_reads_only_signed_mcp_and_shows_exact_facts(mode):
     raw, store = bridge(), MemoryAssistantStore()
     raw.call.return_value = {
         "scope": "upcoming",
@@ -267,9 +268,11 @@ async def test_natural_deadlines_query_reads_only_signed_mcp_and_shows_exact_fac
     }
     llm = Mock(complete=AsyncMock())
     settings = Settings(bot_token="unused", postgres_password="unused")
-    service = Supervisor(settings, store, Assistant(settings, MemoryRepository(), llm), raw)
+    repository = MemoryRepository()
+    repository.profiles[101] = Profile(mode=mode)
+    service = Supervisor(settings, store, Assistant(settings, repository, llm), raw)
     service.base.store.timezone = AsyncMock(return_value="Europe/Moscow")
-    result = await service.respond(101, "Какие у меня ближайшие дедлайны?", "tasks")
+    result = await service.respond(101, "шо по дедлайнам?", "tasks")
     assert "13.10.2026 18:30 · Отчёт по ООП" in result.content
     assert result.pending_id is None
     raw.call.assert_awaited_once_with("get_tasks", {"scope": "upcoming"}, owner=101)
@@ -467,7 +470,8 @@ async def test_invalid_specialist_result_is_not_forwarded_to_user():
         return_value=({"status": "success", "actor_id": 999, "message": "UNVALIDATED"}, None)
     )
     reply = await service.respond(101, "Материалы", "case")
-    assert "UNVALIDATED" not in reply.content and "проверенные" in reply.content
+    assert "UNVALIDATED" not in reply.content
+    assert "Учебные материалы сейчас недоступны" in reply.content
     raw.call.assert_not_called()
 
 

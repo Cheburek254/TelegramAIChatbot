@@ -349,6 +349,8 @@ class Agent:
                 return AgentReply(cached["response"], cached["pending_id"])
             conversation = Conversation(unit.conn, user_id)
             profile = await conversation.profile()
+            if self.instruction:
+                profile = replace(profile, mode="study")
             history = await conversation.history(self.settings.history_max_messages)
             timezone = await unit.conn.fetchval(
                 "SELECT timezone FROM agent_settings WHERE user_id=$1", user_id
@@ -432,13 +434,7 @@ class Agent:
                                 raise ActionError("timezone_required")
                             moment = reminder_time(args["remind_at"], timezone, self.clock())
                             args["remind_at"] = moment.isoformat()
-                            identity = await unit.prepare(args, timezone, moment, self.clock())
-                            reply = AgentReply(
-                                f"🔔 Подтвердите напоминание\n\n{args['text']}\n"
-                                f"📅 {moment:%d.%m.%Y %H:%M}\n🕒 {timezone}\n\n"
-                                "Подтверждение действует 5 минут.",
-                                identity,
-                            )
+                            reply = await self.reminder_card(unit, args, timezone, moment)
                             status = "pending_confirmation"
                             break
                         data = (
@@ -512,6 +508,15 @@ class Agent:
                 )
             await unit.save(reply.content, reply.pending_id)
             return reply
+
+    async def reminder_card(self, unit, args, timezone, moment):
+        identity = await unit.prepare(args, timezone, moment, self.clock())
+        return AgentReply(
+            f"🔔 Подтвердите напоминание\n\n{args['text']}\n"
+            f"📅 {moment:%d.%m.%Y %H:%M}\n🕒 {timezone}\n\n"
+            "Подтверждение действует 5 минут.",
+            identity,
+        )
 
     async def confirm(self, user_id, identity, *, cancel=False):
         started = time.monotonic()

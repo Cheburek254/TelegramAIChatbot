@@ -52,7 +52,7 @@ class PolicyBridge:
             self.component, "mcp", tool_name=name if name in TOOLS[self.component] else "denied"
         ):
             self.validate(name, arguments)
-            if name in {"get_weather", "search_materials", "get_tasks"} and self.owner is not None:
+            if self.owner is not None:
                 trusted["owner"] = self.owner
             result = await self.bridge.call(name, arguments, **trusted)
             self.calls.append(name)
@@ -69,7 +69,7 @@ class PolicyBridge:
             if uri not in RESOURCES.get(self.component, ()) or uri not in discovered:
                 raise MCPFailure("policy_denied")
             result = (
-                await self.bridge.read_week(owner)
+                await self.bridge.read_week(self.owner if self.owner is not None else owner)
                 if uri == "schedule://current-week"
                 else await self.bridge.read_catalog(self.owner)
             )
