@@ -24,11 +24,14 @@ SUCCESS = {
     "restored",
     "done_today",
     "stopped",
+    "removed",
 }
 MESSAGES = {
     "done": "Готово!",
     "repeated": "Готово. Следующая задача уже в списке.",
     "restored": "Задача снова в открытых.",
+    "removed": "Разовое напоминание удалено.",
+    "stopped": "Ежедневное напоминание выключено.",
     "too_soon": "До дедлайна осталось меньше времени, чем задано для оповещения.",
     "past": "Выбранное время уже прошло.",
     "limit": "Можно включить до 10 ежедневных напоминаний.",
@@ -55,7 +58,7 @@ class LessonChange(Strict):
 
 class RecordChange(Strict):
     kind: Literal["t", "r", "d"]
-    operation: Literal["save", "done", "move", "restore"]
+    operation: Literal["save", "done", "move", "restore", "remove"]
     id: str | None = None
     version: Version | None = None
     text: Annotated[str, Field(max_length=500)] = ""
@@ -148,7 +151,19 @@ class MiniAppChanges:
         if operation != "save":
             if not item or (operation == "restore" and kind != "t"):
                 raise FormError("Выберите запись из списка.")
-            if operation == "restore":
+            if operation == "remove":
+                if kind == "t":
+                    raise FormError("Удаление доступно для напоминаний.")
+                pending = await self.store.proposal(
+                    owner, key, now, kind, operation, target=identity, version=change.version
+                )
+                label = (
+                    "Удалить разовое напоминание?"
+                    if kind == "r"
+                    else "Выключить ежедневное напоминание?"
+                )
+                message = f"{label}\n\n{item['text']}"
+            elif operation == "restore":
                 message, pending = await planner.task_operation(owner, key, item, operation)
             else:
                 message, pending = await planner.change(

@@ -282,6 +282,11 @@ function renderRecord(entry, done = false) {
     const actions = element("div", "", "toolbar");
     actions.append(button("Изменить", () => recordForm(entry.kind, entry)));
     actions.append(button("Перенести", () => recordForm(entry.kind, entry, true)));
+    if (entry.kind === "r" || entry.kind === "d") {
+      actions.append(button(entry.kind === "r" ? "Удалить" : "Выключить", event => quick({
+        kind: entry.kind, operation: "remove", id: entry.id, version: entry.version,
+      }, event.currentTarget), "danger"));
+    }
     content.append(actions);
   }
   card.append(content);

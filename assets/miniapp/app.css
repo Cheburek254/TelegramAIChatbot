@@ -78,6 +78,7 @@ h2 { font-size: 1.1rem; line-height: 1.25; }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; margin-top: .7rem; }
 .toolbar button { padding-inline: .65rem; }
 .primary { background: var(--accent); color: var(--accent-text); }
+.danger { color: var(--tg-theme-destructive-text-color, #bd4c55); }
 .item-line { display: flex; align-items: flex-start; gap: .65rem; }
 .item-line > div { min-width: 0; flex: 1; }
 .check {

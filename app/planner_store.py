@@ -38,6 +38,7 @@ ALTER TABLE planner_actions DROP CONSTRAINT IF EXISTS planner_actions_operation_
 ALTER TABLE planner_actions ADD CONSTRAINT planner_actions_operation_check
  CHECK(operation IN ('add','done','move','edit') OR
        (operation IN ('notify','restore','stop_repeat') AND kind='t') OR
+       (operation='remove' AND kind IN ('r','d')) OR
        (operation='focus' AND kind='r'));
 ALTER TABLE agent_reminders ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE agent_reminders ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
@@ -304,7 +305,26 @@ class PlannerStore:
                 )
                 return "focus_added", kind, identity
             table, timing, active = ITEMS[kind]
-            where = f"WHERE user_id=$1 AND id=$2 AND version=$3 AND {active} RETURNING id"
+            where = f"WHERE user_id=$1 AND id=$2 AND version=$3 AND {active}"
+            if operation == "remove":
+                column = "action_id" if kind == "r" else "id"
+                removed = await conn.fetchval(
+                    f"DELETE FROM {table} {where} RETURNING {column}",
+                    owner,
+                    target,
+                    action["version"],
+                )
+                if not removed:
+                    return "stale", kind, target
+                if kind == "r":
+                    # Keep the action as an idempotency record, without allowing recreation.
+                    await conn.execute(
+                        "UPDATE agent_pending SET state='cancelled' WHERE id=$1 AND user_id=$2",
+                        removed,
+                        owner,
+                    )
+                await self._cancel_deliveries(conn, owner, kind, target)
+                return ("removed" if kind == "r" else "stopped"), kind, target
             if operation == "done":
                 update = "skip_on=$4" if kind == "d" else "completed_at=$4"
                 value = action["local_date"] if kind == "d" else now
@@ -334,7 +354,7 @@ class PlannerStore:
             if kind == "d" and operation == "move":
                 args = (*args, now)
             if not await conn.fetchval(
-                f"UPDATE {table} SET {update},version=version+1 {where}", *args
+                f"UPDATE {table} SET {update},version=version+1 {where} RETURNING id", *args
             ):
                 return "stale", kind, target
             await self._cancel_deliveries(conn, owner, kind, target)

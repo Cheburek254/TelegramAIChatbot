@@ -266,7 +266,7 @@ class AssistantStore:
             "AND p.destination_chat_id IS NOT NULL AND r.completed_at IS NULL "
             "AND NOT EXISTS (SELECT 1 FROM assistant_outbox o WHERE o.reminder_id=r.id "
             "AND o.due_at=r.remind_at AND o.state='sent') "
-            "ON CONFLICT(event_key) DO NOTHING",
+            "FOR SHARE OF r ON CONFLICT(event_key) DO NOTHING",
             now,
         )
 

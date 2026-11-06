@@ -10,7 +10,7 @@ import pytest
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.methods import SendMessage
 
-from app.agent_store import AgentStore
+from app.agent_store import ActionError, AgentStore
 from app.db import create_pool
 from app.itmo_watch import ItmoWatch
 from app.itmo_watch_store import ItmoWatchStore
@@ -110,16 +110,47 @@ async def test_miniapp_confirmed_changes_share_planner_and_schedule(database):
                 await prepare(kind=kind, operation="save", text="Reminder", when=initial)
             )
             (row,) = await planner.active(owner, kind, 0)
+            stale = await prepare(kind=kind, operation="remove", **reference(row))
             assert await confirm(
                 await prepare(
                     kind=kind, operation="save", text="Renamed", when=edited, **reference(row)
                 )
             )
+            assert not await confirm(stale)
             (row,) = await planner.active(owner, kind, 0)
             assert row["text"] == "Renamed"
             assert (row["minute"] if kind == "d" else row["remind_at"].hour) == (
                 900 if kind == "d" else 12
             )
+            if kind == "d":
+                due = now + timedelta(hours=2)
+                await store.enqueue_daily_reminder(row, due, due.date())
+            else:
+                due = row["remind_at"]
+                await store.enqueue_reminders(due)
+            claimed = await store.claim(due)
+            column = "daily_reminder_id" if kind == "d" else "reminder_id"
+            assert claimed[column] == row["id"]
+            removal = await prepare(kind=kind, operation="remove", **reference(row))
+            assert not await confirm(removal, other)
+            assert await confirm(removal)
+            assert not await confirm(removal)
+            assert not await planner.active(owner, kind, 0)
+            async with store.delivery(claimed, due) as target:
+                assert target is None
+            assert (
+                await pool.fetchval("SELECT state FROM assistant_outbox WHERE id=$1", claimed["id"])
+                == "cancelled"
+            )
+            if kind == "r":
+                # The original action is still within its TTL and the reminder was in the future.
+                with pytest.raises(ActionError, match="confirmation_required"):
+                    await schedule.agent_store.create_reminder(
+                        owner,
+                        row["action_id"],
+                        {"text": "Reminder", "remind_at": "2026-11-07T18:00:00+03:00"},
+                        now,
+                    )
     finally:
         await pool.close()
 
