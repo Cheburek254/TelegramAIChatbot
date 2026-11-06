@@ -24,6 +24,12 @@ class ITMOClient:
         self.state_dir = Path(state_dir).resolve()
         self.locks = {}
 
+    def connected(self, owner):
+        if type(owner) is not int or owner <= 0:
+            return False
+        directory = self.state_dir / str(owner)
+        return not directory.is_symlink() and (directory / "state.json").is_file()
+
     @asynccontextmanager
     async def session_lock(self, owner):
         async with self.locks.setdefault(owner, asyncio.Lock()):
@@ -48,13 +54,11 @@ class ITMOClient:
                     os.close(descriptor)
 
     async def fetch(self, owner, first, last):
-        if type(owner) is not int or owner <= 0:
+        if not self.connected(owner):
             raise ITMOError("itmo_not_connected")
         if not 0 <= (last - first).days <= 30:
             raise ITMOError("itmo_invalid_range")
         directory = self.state_dir / str(owner)
-        if directory.is_symlink() or not (directory / "state.json").is_file():
-            raise ITMOError("itmo_not_connected")
         async with self.session_lock(owner):
             try:
                 async with asyncio.timeout(45):
@@ -64,7 +68,7 @@ class ITMOClient:
                     "to": last.isoformat(),
                 }:
                     raise ITMOError("itmo_invalid_response")
-                days = body.get("days", [])
+                days = body.get("days")
                 if not isinstance(days, list):
                     raise ITMOError("itmo_invalid_response")
                 raw = {"code": 0, "data": []}

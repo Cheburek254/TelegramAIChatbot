@@ -108,6 +108,7 @@ ALTER TABLE personal_schedule_actions ADD CONSTRAINT personal_schedule_actions_o
 
 
 async def migrate(pool: asyncpg.Pool) -> None:
+    from app.itmo_watch_store import SCHEMA as ITMO_WATCH_SCHEMA
     from app.material_store import SCHEMA as MATERIAL_SCHEMA
     from app.orchestration.store import SCHEMA as ASSISTANT_SCHEMA
     from app.planner_store import SCHEMA as PLANNER_SCHEMA
@@ -120,3 +121,4 @@ async def migrate(pool: asyncpg.Pool) -> None:
         await connection.execute(MATERIAL_SCHEMA)
         await connection.execute(STYLE_SCHEMA)
         await connection.execute(PLANNER_SCHEMA)
+        await connection.execute(ITMO_WATCH_SCHEMA)

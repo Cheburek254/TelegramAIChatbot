@@ -174,12 +174,23 @@ class BriefingService:
 
 
 class Scheduler:
-    def __init__(self, store, bridge, sender, *, clock=None, interval=30, briefing_timeout=50):
+    def __init__(
+        self,
+        store,
+        bridge,
+        sender,
+        *,
+        clock=None,
+        interval=30,
+        briefing_timeout=50,
+        itmo_watch=None,
+    ):
         self.store, self.bridge, self.sender = store, bridge, sender
         self.clock = clock or (lambda: datetime.now(UTC))
         self.interval = interval
         self.briefing = BriefingService(store, bridge, timeout=briefing_timeout)
         self.stopped = asyncio.Event()
+        self.itmo_watch = itmo_watch
 
     async def prepare_due(self):
         now = self.clock()
@@ -240,6 +251,18 @@ class Scheduler:
                     )
                     send_options["reply_markup"] = InlineKeyboardMarkup(
                         inline_keyboard=planner_item_rows("t", task)
+                    )
+                elif event["kind"] == "itmo_change":
+                    text = event["payload"]
+                    send_options["reply_markup"] = InlineKeyboardMarkup(
+                        inline_keyboard=[
+                            [
+                                InlineKeyboardButton(
+                                    text="🎓 Открыть расписание ИТМО",
+                                    callback_data="schedule:itmo_get",
+                                )
+                            ]
+                        ]
                     )
                 else:
                     if (
@@ -310,6 +333,12 @@ class Scheduler:
         await self.store.cleanup(self.clock())
 
     async def run(self):
+        async with asyncio.TaskGroup() as group:
+            if self.itmo_watch:
+                group.create_task(self.itmo_watch.run(self.stopped))
+            await self._run()
+
+    async def _run(self):
         while not self.stopped.is_set():
             try:
                 await self.tick()

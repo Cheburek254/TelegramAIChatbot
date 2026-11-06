@@ -11,6 +11,12 @@ DAILY_PATTERN = re.compile(
     r"^напом(?:ни|инай)\s+(?:мне\s+)?(?:каждый день|ежедневно)\s+в\s+(\S+)\s+(.+)$",
     re.I,
 )
+REPEAT_TASK = re.compile(
+    r"^кажд(?:ый|ую|ое)\s+(?P<period>день|неделю|понедельник|вторник|среду|"
+    r"четверг|пятницу|субботу|воскресенье)\s+"
+    r"(?:в\s+(?P<clock>[0-9]{1,2}:[0-9]{2})\s+)?(?P<title>.+)$",
+    re.I,
+)
 WEEKDAYS = ("понедельник", "вторник", "сред", "четверг", "пятниц", "суббот", "воскресенье")
 DAY = (
     r"послезавтра|завтра|сегодня|понедельник(?:а)?|вторник(?:а)?|сред[уыа]|четверг(?:а)?|"
@@ -55,6 +61,20 @@ def task_intent(text):
     return None
 
 
+def repeat_task_intent(text):
+    match = REPEAT_TASK.fullmatch(text.strip())
+    if not match or match["title"].endswith("?"):
+        return None
+    period = match["period"].lower()
+    title, clock = match["title"], match["clock"]
+    trailing = re.fullmatch(r"(.+?)\s+в\s+([0-9]{1,2}:[0-9]{2})", title, re.I)
+    if trailing and not clock:
+        title, clock = trailing.groups()
+    day = "сегодня" if period in {"день", "неделю"} else period
+    timing = MOVE_WHEN.fullmatch(f"{day} {clock or '23:59'}")
+    return (title, timing), 1 if period == "день" else 7
+
+
 def local_due(match, now, timezone):
     local = now.astimezone(zone(timezone))
     today = local.date()
@@ -93,30 +113,66 @@ class Planner:
         self.store, self.notifications, self.timezone = store, notifications, timezone
         self.clock = clock or (lambda: datetime.now(UTC))
 
-    async def add_task(self, owner, key, intent):
+    async def zone_for(self, owner):
+        profile = await self.notifications.store.profile(owner)
+        return (profile and profile["timezone"]) or self.timezone
+
+    async def add_task(self, owner, key, intent, *, repeat_days=None):
         title, match = intent
         if not 1 <= len(title) <= 500 or "\0" in title:
             return "Введите название задачи длиной от 1 до 500 символов.", None
         if match is None and re.search(r"\d:\d|\b(?:сегодня|завтра|послезавтра)\b", title, re.I):
             return "Укажите срок в конце сообщения, например «Задача: отчёт завтра в 18:00».", None
-        profile = await self.notifications.store.profile(owner)
-        timezone = (profile and profile["timezone"]) or self.timezone
+        timezone = await self.zone_for(owner)
         now = self.clock()
         try:
             due = local_due(match, now, timezone) if match else None
         except ValueError:
-            return (
-                "Выберите корректный будущий срок, например «Задача: отчёт завтра в 18:00».",
-                None,
-            )
+            if repeat_days and match["day"] == "сегодня":
+                try:
+                    day = now.astimezone(zone(timezone)).date() + timedelta(days=repeat_days)
+                    timing = MOVE_WHEN.fullmatch(f"{day} {match['hour']}:{match['minute']}")
+                    due = local_due(timing, now, timezone)
+                except ValueError:
+                    return "Укажите корректное время повторения, например 18:00.", None
+            else:
+                return (
+                    "Выберите корректный будущий срок, например «Задача: отчёт завтра в 18:00».",
+                    None,
+                )
+        return await self.propose_task(owner, key, title, timezone, due, repeat_days=repeat_days)
+
+    async def propose_task(self, owner, key, title, timezone, due, *, repeat_days=None):
         pending = await self.store.proposal(
-            owner, key, now, "t", "add", text=title, timezone=timezone, due_at=due
+            owner,
+            key,
+            self.clock(),
+            "t",
+            "add",
+            text=title,
+            timezone=timezone,
+            due_at=due,
+            repeat_days=repeat_days,
         )
         when = when_text("t", {"timezone": timezone, "due_at": due})
+        repeat = {1: "\n🔁 Каждый день", 7: "\n🔁 Каждую неделю"}.get(repeat_days, "")
         return (
-            f"📌 Добавить задачу?\n\n{title}\n{when}\n\nПодтверждение действует 5 минут.",
+            f"📌 Добавить задачу?\n\n{title}\n{when}{repeat}\n\nПодтверждение действует 5 минут.",
             pending,
         )
+
+    async def task_operation(self, owner, key, item, operation):
+        labels = {"restore": "Вернуть задачу в открытые?", "stop_repeat": "Отключить повторение?"}
+        pending = await self.store.proposal(
+            owner,
+            key,
+            self.clock(),
+            "t",
+            operation,
+            target=item["id"],
+            version=item["version"],
+        )
+        return f"{labels[operation]}\n\n{item['text']}", pending
 
     async def change(self, owner, key, kind, item, option, custom=None):
         now = self.clock()

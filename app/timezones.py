@@ -1,6 +1,6 @@
 """Проверка IANA и локального времени с обоими вариантами fold."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, reset_tzpath
 
 # Одинаковая закреплённая IANA-база на Windows, Linux и macOS; не зависим
@@ -26,6 +26,18 @@ def local_candidates(local: datetime, timezone: str) -> list[datetime]:
         if utc.astimezone(tz).replace(tzinfo=None) == local:
             moments[utc] = candidate
     return list(moments.values())
+
+
+def next_task_due(due, timezone, days, now):
+    tz = zone(timezone)
+    wall = due.astimezone(tz).replace(tzinfo=None)
+    today = now.astimezone(tz).date()
+    step = max(1, (today - wall.date()).days // days)
+    while True:
+        candidates = local_candidates(wall + timedelta(days=days * step), timezone)
+        if candidates and candidates[0].astimezone(UTC) > now:
+            return candidates[0].astimezone(UTC)
+        step += 1
 
 
 def reminder_time(value: str, timezone: str, now: datetime) -> datetime:

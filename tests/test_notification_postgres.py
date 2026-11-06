@@ -12,6 +12,8 @@ from aiogram.methods import SendMessage
 
 from app.agent_store import AgentStore
 from app.db import create_pool
+from app.itmo_watch import ItmoWatch
+from app.itmo_watch_store import ItmoWatchStore
 from app.mcp_client import MCPBridge, MCPFailure
 from app.migrations import migrate
 from app.orchestration.notifications import Notifications
@@ -27,6 +29,97 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(os.getenv("RUN_INTEGRATION") != "1", reason="Отдельная PostgreSQL"),
 ]
+
+
+async def test_personal_planning_confirmation_repeat_and_itmo_delivery(database):
+    settings, _, _, _ = database
+    pool = await create_pool(settings)
+    planner = PlannerStore(pool)
+    store, watch_store = AssistantStore(pool), ItmoWatchStore(pool)
+    owner, other = 123, 124
+    now = datetime(2026, 11, 6, 9, tzinfo=UTC)
+    due = now + timedelta(hours=3)
+    sender = Mock(send_message=AsyncMock())
+    scheduler = Scheduler(store, bridge(), sender, clock=lambda: now)
+    client = Mock(connected=lambda owner: True, fetch=AsyncMock())
+    watch = ItmoWatch(watch_store, client, clock=lambda: now)
+    sample = {
+        "date": "2026-11-07",
+        "start": "12:00",
+        "end": "13:00",
+        "title": "Synthetic class",
+        "location": "101",
+    }
+    try:
+        await migrate(pool)
+        await migrate(pool)
+        await store.contact(owner, owner)
+        await store.contact(other, other)
+        identity = await planner.proposal(
+            owner,
+            "repeat",
+            now,
+            "t",
+            "add",
+            text="Weekly report",
+            timezone="Europe/Moscow",
+            due_at=due,
+            repeat_days=7,
+        )
+        assert (await planner.confirm(other, identity, now))[0] == "invalid"
+        assert (await planner.confirm(owner, identity, now))[0] == "added"
+        alert = await planner.proposal(
+            owner, "lead", now, "t", "notify", target=identity, version=1, minute=30
+        )
+        assert (await planner.confirm(owner, alert, now))[0] == "alert_set"
+        done = await planner.proposal(owner, "done", now, "t", "done", target=identity, version=2)
+        results = await asyncio.gather(
+            planner.confirm(owner, done, now), planner.confirm(owner, done, now)
+        )
+        assert sorted(result[0] for result in results) == ["invalid", "repeated"]
+        (following,) = await planner.active(owner, "t", 0)
+        assert following["due_at"] == due + timedelta(days=7)
+        assert following["notify_before"] == 30
+        assert await planner.history(other, query="report") == []
+        (original,) = await planner.history(owner, query="REPORT")
+        restore = await planner.proposal(
+            owner, "restore", now, "t", "restore", target=identity, version=original["version"]
+        )
+        assert (await planner.confirm(owner, restore, now))[0] == "restored"
+        (restored,) = await planner.active(owner, "t", 0)
+        assert restored["id"] == identity
+
+        focus = await planner.proposal(
+            owner, "focus", now, "r", "focus", text="Focus", timezone="Europe/Moscow", due_at=due
+        )
+        assert (await planner.confirm(owner, focus, now))[0] == "focus_added"
+        assert (await planner.confirm(owner, focus, now))[0] == "invalid"
+        assert (await planner.active(owner, "r", 0))[0]["remind_at"] == due
+
+        on = await watch_store.propose(owner, "on", True, now)
+        assert await watch_store.confirm(other, on, now) is None
+        assert await watch_store.confirm(owner, on, now) is True
+        assert await watch_store.confirm(owner, on, now) is None
+        client.fetch.return_value = [sample]
+        assert await watch.tick()
+        assert not await scheduler.deliver_one()
+        now += timedelta(minutes=30)
+        client.fetch.return_value = [dict(sample, location="102")]
+        assert await watch.tick()
+        assert await scheduler.deliver_one()
+        assert sender.send_message.call_args.args[0] == owner
+        assert "Смена аудитории" in sender.send_message.call_args.args[1]
+        now += timedelta(minutes=30)
+        client.fetch.return_value = []
+        assert await watch.tick()
+        claimed = await store.claim(now)
+        off = await watch_store.propose(owner, "off", False, now)
+        assert await watch_store.confirm(owner, off, now) is False
+        async with store.delivery(claimed, now) as target:
+            assert target is None
+        assert sender.send_message.await_count == 1
+    finally:
+        await pool.close()
 
 
 async def test_outbox_concurrency_consent_boundaries_retries_restart_and_trace_privacy(database):

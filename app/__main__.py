@@ -14,12 +14,15 @@ from app.config import ConfigError, Settings
 from app.db import create_pool
 from app.handlers.assistant import create_router
 from app.handlers.features import ContactMiddleware, create_feature_router
+from app.handlers.itmo_watch import create_itmo_watch_router
 from app.handlers.planner import create_planner_router
 from app.health import HealthState, start_health_server
 from app.itmo import ITMOClient
 from app.itmo_auth import ITMOAuth
 from app.itmo_auth_store import AuthStore
 from app.itmo_auth_web import start_auth_server
+from app.itmo_watch import ItmoWatch
+from app.itmo_watch_store import ItmoWatchStore
 from app.llm import LLMClient
 from app.logging_setup import configure_logging
 from app.material_service import PersonalMaterials
@@ -38,6 +41,7 @@ from app.repository import PostgresRepository
 from app.schedule_service import ScheduleService
 from app.schedule_store import ScheduleStore
 from app.speech_style import SpeechStyles
+from app.study_planning import StudyPlanning
 from app.style_store import SpeechStyleStore
 from app.system_speech import SystemSpeechMiddleware
 from app.telegram import create_bot
@@ -109,12 +113,14 @@ async def run(settings: Settings) -> None:
                 store = AssistantStore(state.pool)
                 agent = Supervisor(settings, store, assistant, bridge)
                 notifications = Notifications(store, Geography(Weather(llm_session)))
+                watch_store = ItmoWatchStore(state.pool)
                 scheduler = Scheduler(
                     store,
                     bridge,
                     bot,
                     interval=settings.scheduler_interval,
                     briefing_timeout=settings.briefing_timeout,
+                    itmo_watch=ItmoWatch(watch_store, schedule_service.itmo),
                 )
         try:
             await bot.set_my_commands(
@@ -143,6 +149,8 @@ async def run(settings: Settings) -> None:
                         ("remind", "Создать разовое напоминание"),
                         ("weather", "Погода в выбранном городе"),
                         ("tasks", "Мои задачи и дедлайны"),
+                        ("free", "Найти свободное время между парами"),
+                        ("itmo_alerts", "Уведомления об изменениях расписания ИТМО"),
                         ("trace", "Путь обработки последнего запроса"),
                     ]
                 ],
@@ -154,14 +162,23 @@ async def run(settings: Settings) -> None:
         if notifications:
             dispatcher.message.outer_middleware(ContactMiddleware(store))
             dispatcher.callback_query.outer_middleware(ContactMiddleware(store))
+            planner = Planner(
+                PlannerStore(state.pool), notifications, settings.mcp_resource_timezone
+            )
             dispatcher.include_router(
                 create_planner_router(
-                    Planner(
-                        PlannerStore(state.pool), notifications, settings.mcp_resource_timezone
+                    planner,
+                    study=StudyPlanning(
+                        planner,
+                        schedule_service.store,
+                        schedule_service.itmo,
+                        assistant.llm,
+                        settings.history_max_tokens,
                     ),
                     bot_username=me.username,
                 )
             )
+            dispatcher.include_router(create_itmo_watch_router(watch_store, schedule_service.itmo))
             dispatcher.include_router(
                 create_feature_router(
                     notifications,

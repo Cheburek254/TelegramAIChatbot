@@ -60,7 +60,8 @@ CREATE TABLE IF NOT EXISTS assistant_daily_pending (
 ALTER TABLE assistant_outbox ADD COLUMN IF NOT EXISTS daily_reminder_id UUID;
 ALTER TABLE assistant_outbox DROP CONSTRAINT IF EXISTS assistant_outbox_kind_check;
 ALTER TABLE assistant_outbox ADD CONSTRAINT assistant_outbox_kind_check
- CHECK(kind IN ('reminder_delivery','daily_briefing','daily_reminder_delivery','task_deadline'));
+ CHECK(kind IN ('reminder_delivery','daily_briefing','daily_reminder_delivery',
+                'task_deadline','itmo_change'));
 CREATE INDEX IF NOT EXISTS assistant_outbox_daily_series ON assistant_outbox(daily_reminder_id)
  WHERE daily_reminder_id IS NOT NULL;
 """
@@ -278,7 +279,9 @@ class AssistantStore:
             "CROSS JOIN LATERAL (SELECT t.due_at-make_interval(mins=>t.notify_before) AS due) a "
             "WHERE p.destination_chat_id=t.user_id AND t.completed_at IS NULL "
             "AND t.notify_before IS NOT NULL AND t.due_at>$1 AND a.due<=$1 "
-            "AND a.due>=$1-interval '15 minutes' ON CONFLICT(event_key) DO NOTHING",
+            "AND a.due>=$1-interval '15 minutes' AND NOT EXISTS ("
+            "SELECT 1 FROM assistant_outbox o WHERE o.task_id=t.id AND o.due_at=a.due "
+            "AND o.state='sent') ON CONFLICT(event_key) DO NOTHING",
             now,
         )
 
@@ -511,6 +514,17 @@ class AssistantStore:
                         event["reminder_version"],
                     )
                 )
+            elif event["kind"] == "itmo_change":
+                valid = (
+                    valid
+                    and row["destination_chat_id"] == event["user_id"]
+                    and await conn.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM itmo_watch_profiles "
+                        "WHERE user_id=$1 AND enabled AND version=$2)",
+                        event["user_id"],
+                        event["consent_version"],
+                    )
+                )
             if not valid:
                 await conn.execute(
                     "UPDATE assistant_outbox SET state=$3,payload=NULL WHERE id=$1 "
@@ -569,9 +583,10 @@ class AssistantStore:
         await self.pool.execute("DELETE FROM assistant_city_pending WHERE expires_at<$1", now)
         await self.pool.execute("DELETE FROM assistant_daily_pending WHERE expires_at<$1", now)
         await self.pool.execute("DELETE FROM planner_actions WHERE expires_at<$1", now)
+        await self.pool.execute("DELETE FROM itmo_watch_actions WHERE expires_at<$1", now)
         await self.pool.execute(
-            "DELETE FROM assistant_outbox "
-            "WHERE kind IN ('daily_reminder_delivery','task_deadline') "
+            "DELETE FROM assistant_outbox WHERE kind IN "
+            "('daily_reminder_delivery','task_deadline','itmo_change') "
             "AND deadline<$1 AND state IN ('sent','missed','failed','cancelled')",
             now - timedelta(days=30),
         )

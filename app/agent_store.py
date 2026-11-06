@@ -10,6 +10,19 @@ class ActionError(ValueError):
     pass
 
 
+async def insert_reminder(conn, identity, action, owner, text, due, timezone):
+    await conn.execute(
+        "INSERT INTO agent_reminders(id,action_id,user_id,text,remind_at,timezone) "
+        "VALUES($1,$2,$3,$4,$5,$6)",
+        identity,
+        action,
+        owner,
+        text,
+        due,
+        timezone,
+    )
+
+
 class AgentStore:
     def __init__(self, pool):
         self.pool = pool
@@ -99,18 +112,8 @@ class AgentStore:
 
             reminder_time(arguments["remind_at"], row["timezone"], now)
             identity = uuid.uuid4()
-            await conn.execute(
-                (
-                    "INSERT INTO "
-                    "agent_reminders(id,action_id,user_id,text,remind_at,timezone) "
-                    "VALUES($1,$2,$3,$4,$5,$6)"
-                ),
-                identity,
-                action_id,
-                owner,
-                row["text"],
-                row["remind_at"],
-                row["timezone"],
+            await insert_reminder(
+                conn, identity, action_id, owner, row["text"], row["remind_at"], row["timezone"]
             )
             await conn.execute("UPDATE agent_pending SET state='completed' WHERE id=$1", action_id)
             return {

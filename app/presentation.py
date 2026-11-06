@@ -107,6 +107,7 @@ def section_keyboard(section, bot_username=None):
             ("Эта неделя", "schedule:week"),
             ("📆 Выбрать дату", "/schedule "),
             ("🎓 Из ИТМО", "schedule:itmo_get"),
+            ("🔔 Изменения ИТМО", "iw:menu"),
             ("← Назад", "schedule:menu"),
         ],
         "repeat": [
