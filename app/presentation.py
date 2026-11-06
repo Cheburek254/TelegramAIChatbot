@@ -2,12 +2,20 @@
 
 import re
 from dataclasses import dataclass
+from urllib.parse import quote, urlencode
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity
+from aiogram.types import CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity
 
 from app.context import split_telegram
 
 MODE_ICONS = {"study": "📚", "translate": "🌐", "review": "🔎"}
+
+
+def draft_button(label, command, bot_username=None):
+    if bot_username:
+        query = urlencode({"domain": bot_username, "text": command}, quote_via=quote)
+        return InlineKeyboardButton(text=label, url=f"tg://resolve?{query}")
+    return InlineKeyboardButton(text=label, copy_text=CopyTextButton(text=command))
 
 
 def confirmation_keyboard(identity, *, prefix="reminder") -> InlineKeyboardMarkup:
@@ -52,6 +60,7 @@ def main_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(text="📅 Расписание", callback_data="schedule:menu"),
+                InlineKeyboardButton(text="📌 Задачи", callback_data="plan:list:t:0"),
                 InlineKeyboardButton(text="🧰 Инструменты", callback_data="agent:tools"),
             ],
             [
@@ -61,7 +70,7 @@ def main_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def settings_keyboard() -> InlineKeyboardMarkup:
+def settings_keyboard(bot_username=None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -69,7 +78,7 @@ def settings_keyboard() -> InlineKeyboardMarkup:
                 for value in ("0.0", "0.3", "0.7", "1.0")
             ],
             [
-                InlineKeyboardButton(text="🕒 Часовой пояс", callback_data="agent:timezone"),
+                draft_button("🕒 Часовой пояс", "/timezone ", bot_username),
                 InlineKeyboardButton(text="🧹 Очистить историю", callback_data="reset"),
             ],
             [InlineKeyboardButton(text="🔔 Уведомления", callback_data="features:notifications")],
@@ -78,7 +87,7 @@ def settings_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def section_keyboard(section):
+def section_keyboard(section, bot_username=None):
     sections = {
         "schedule": [
             ("📥 Поставить", "schedule:put"),
@@ -86,7 +95,7 @@ def section_keyboard(section):
             ("← Назад", "menu"),
         ],
         "put": [
-            ("➕ Разовое занятие", "schedule:single"),
+            ("➕ Разовое занятие", "/schedule add "),
             ("🔁 Повторяющиеся", "schedule:repeat"),
             ("✏️ Изменить / удалить", "schedule:edit_help"),
             ("🎓 Сохранить ИТМО · 14 дней", "schedule:itmo_save"),
@@ -96,20 +105,27 @@ def section_keyboard(section):
             ("🔐 Подключить ИТМО", "itmo:connect"),
             ("Сегодня", "schedule:today"),
             ("Эта неделя", "schedule:week"),
+            ("📆 Выбрать дату", "/schedule "),
             ("🎓 Из ИТМО", "schedule:itmo_get"),
             ("← Назад", "schedule:menu"),
         ],
         "repeat": [
-            ("Каждую неделю", "schedule:all"),
-            ("Чётная", "schedule:even"),
-            ("Нечётная", "schedule:odd"),
+            ("Каждую неделю", "/schedule repeat all "),
+            ("Чётная", "/schedule repeat even "),
+            ("Нечётная", "/schedule repeat odd "),
+            ("← Назад", "schedule:put"),
+        ],
+        "edit_schedule": [
+            ("✏️ Изменить занятие", "/schedule edit "),
+            ("🗑 Удалить занятие", "/schedule delete "),
+            ("🗑 Удалить серию", "/schedule delete_series "),
             ("← Назад", "schedule:put"),
         ],
         "tools": [
             ("📌 Задачи и дедлайны", "plan:list:t:0"),
             ("📚 Учебные материалы", "features:materials"),
             ("🧭 Трасса запроса", "features:trace"),
-            ("🌦 Погода", "tool:weather"),
+            ("🌦 Погода", "/weather "),
             ("🔔 Разовые напоминания", "plan:list:r:0"),
             ("🔁 Ежедневные напоминания", "daily:menu"),
             ("🔎 Почему?", "agent:why"),
@@ -118,7 +134,11 @@ def section_keyboard(section):
     }
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=label, callback_data=data)]
+            [
+                draft_button(label, data, bot_username)
+                if data.startswith("/")
+                else InlineKeyboardButton(text=label, callback_data=data)
+            ]
             for label, data in sections[section]
         ]
     )

@@ -7,7 +7,14 @@ from aiogram.methods import SendMessage
 from aiogram.types import CallbackQuery, Chat, Message, Update, User
 
 from app.handlers.assistant import create_router
-from app.presentation import formatted_parts, main_keyboard, settings_keyboard
+from app.presentation import draft_button, formatted_parts, main_keyboard, settings_keyboard
+
+
+def test_draft_button_encodes_trailing_space_and_uses_current_bot():
+    button = draft_button("Добавить", "/tasks add ", "synthetic_bot")
+    assert button.url == "tg://resolve?domain=synthetic_bot&text=%2Ftasks%20add%20"
+    assert button.callback_data is None
+    assert draft_button("Добавить", "/tasks add ").copy_text.text == "/tasks add "
 
 
 def test_model_markup_uses_entities_and_leaves_html_as_literal_text():

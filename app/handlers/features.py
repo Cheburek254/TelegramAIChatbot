@@ -12,17 +12,17 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from app.handlers.assistant import send_parts
 from app.material_service import HELP, MAX_FILE_BYTES, format_briefing_time
 from app.orchestration.notifications import DAILY_HELP
-from app.presentation import confirmation_keyboard, planner_button, settings_keyboard
+from app.presentation import confirmation_keyboard, draft_button, planner_button, settings_keyboard
 
 
-def notifications_keyboard():
+def notifications_keyboard(bot_username=None):
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="☀️ Включить сводку", callback_data="features:on"),
                 InlineKeyboardButton(text="🔕 Отключить", callback_data="features:off"),
             ],
-            [InlineKeyboardButton(text="📍 Выбрать город", callback_data="features:city")],
+            [draft_button("📍 Выбрать город", "/city ", bot_username)],
             [InlineKeyboardButton(text="🕒 Время сводки", callback_data="features:time")],
             [InlineKeyboardButton(text="🔁 Ежедневные напоминания", callback_data="daily:menu")],
             [InlineKeyboardButton(text="← Настройки", callback_data="settings")],
@@ -47,12 +47,12 @@ class ContactMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 
-def materials_keyboard():
+def materials_keyboard(bot_username=None):
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="➕ Добавить материал", callback_data="material:add")],
+            [draft_button("➕ Добавить текст", "/materials add ", bot_username)],
             [InlineKeyboardButton(text="📚 Мои материалы", callback_data="material:list")],
-            [InlineKeyboardButton(text="🗑 Удалить материал", callback_data="material:delete")],
+            [draft_button("🗑 Удалить по ID", "/materials delete ", bot_username)],
             [InlineKeyboardButton(text="← Инструменты", callback_data="agent:tools")],
         ]
     )
@@ -65,7 +65,7 @@ class BoundedUpload(io.BytesIO):
         return super().write(data)
 
 
-def create_feature_router(notifications, supervisor, materials=None):
+def create_feature_router(notifications, supervisor, materials=None, *, bot_username=None):
     router = Router(name="features")
     router.message.filter(F.chat.type == "private", F.from_user.is_bot == False)  # noqa: E712
     router.callback_query.filter(F.message.chat.type == "private")
@@ -94,6 +94,9 @@ def create_feature_router(notifications, supervisor, materials=None):
         lines.append(DAILY_HELP)
         if notice:
             lines.insert(0, notice)
+        buttons.append(
+            [draft_button("➕ Добавить ежедневное", "/daily_reminders add ", bot_username)]
+        )
         buttons.append([InlineKeyboardButton(text="← Инструменты", callback_data="agent:tools")])
         await send_parts(
             message,
@@ -153,7 +156,7 @@ def create_feature_router(notifications, supervisor, materials=None):
             keyboard=(
                 confirmation_keyboard(pending, prefix="content")
                 if pending
-                else materials_keyboard()
+                else materials_keyboard(bot_username)
             ),
         )
 
@@ -170,7 +173,7 @@ def create_feature_router(notifications, supervisor, materials=None):
             keyboard=(
                 confirmation_keyboard(pending, prefix="content")
                 if pending
-                else notifications_keyboard()
+                else notifications_keyboard(bot_username)
             ),
         )
 
@@ -235,7 +238,7 @@ def create_feature_router(notifications, supervisor, materials=None):
             )
         except ValueError:
             text = "Карточка недействительна."
-        await send_parts(query.message, text, keyboard=settings_keyboard())
+        await send_parts(query.message, text, keyboard=settings_keyboard(bot_username))
 
     @router.callback_query(F.data.startswith("material:"))
     async def material_menu(query: CallbackQuery):
@@ -266,7 +269,7 @@ def create_feature_router(notifications, supervisor, materials=None):
                 reply_markup=(
                     confirmation_keyboard(pending, prefix="city")
                     if pending
-                    else notifications_keyboard()
+                    else notifications_keyboard(bot_username)
                 ),
             )
         except Exception:
@@ -285,7 +288,7 @@ def create_feature_router(notifications, supervisor, materials=None):
             message,
             text,
             keyboard=(
-                notifications_keyboard()
+                notifications_keyboard(bot_username)
                 if command.command.startswith("briefing") or command.command == "notifications"
                 else None
             ),
@@ -305,7 +308,9 @@ def create_feature_router(notifications, supervisor, materials=None):
             )
         except ValueError:
             text = "Подтверждение города недействительно."
-        await query.message.answer(text, parse_mode=None, reply_markup=notifications_keyboard())
+        await query.message.answer(
+            text, parse_mode=None, reply_markup=notifications_keyboard(bot_username)
+        )
 
     @router.callback_query(F.data.startswith("features:"))
     async def menu(query: CallbackQuery):
@@ -326,6 +331,7 @@ def create_feature_router(notifications, supervisor, materials=None):
                             InlineKeyboardButton(text=t, callback_data="features:at:" + t)
                             for t in ("07:00", "08:00", "09:00")
                         ],
+                        [draft_button("✏️ Своё время", "/briefing_time ", bot_username)],
                         [
                             InlineKeyboardButton(
                                 text="← Уведомления", callback_data="features:settings"
@@ -346,7 +352,7 @@ def create_feature_router(notifications, supervisor, materials=None):
                 keyboard=(
                     confirmation_keyboard(pending, prefix="content")
                     if pending
-                    else notifications_keyboard()
+                    else notifications_keyboard(bot_username)
                 ),
             )
             return
@@ -362,7 +368,11 @@ def create_feature_router(notifications, supervisor, materials=None):
         await query.message.answer(
             text,
             parse_mode=None,
-            reply_markup=settings_keyboard() if choice == "trace" else notifications_keyboard(),
+            reply_markup=(
+                settings_keyboard(bot_username)
+                if choice == "trace"
+                else notifications_keyboard(bot_username)
+            ),
         )
 
     return router

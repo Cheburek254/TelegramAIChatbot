@@ -354,7 +354,9 @@ async def test_planner_tasks_briefing_and_rescheduled_reminders(database):
         claimed = await store.claim(now)
         assert claimed["reminder_id"] == reminder
         row = await planner_store.item(owner, "r", reminder)
-        _, reschedule = await planner.change(owner, "r-move", "r", row, "hour")
+        _, reschedule = await planner.change(
+            owner, "r-move", "r", row, "custom", custom="2026-11-06 17:00"
+        )
         assert await planner_store.confirm(owner, reschedule, now) == ("moved", "r", reminder)
         async with store.delivery(claimed, now) as target:
             assert target is None
@@ -380,7 +382,7 @@ async def test_planner_tasks_briefing_and_rescheduled_reminders(database):
         old_occurrence = await store.claim(now)
         assert old_occurrence["daily_reminder_id"] == series
         row = await planner_store.item(owner, "d", series)
-        _, reschedule = await planner.change(owner, "d-move", "d", row, "hour")
+        _, reschedule = await planner.change(owner, "d-move", "d", row, "custom", custom="19:00")
         assert await planner_store.confirm(owner, reschedule, now) == ("moved", "d", series)
         async with store.delivery(old_occurrence, now) as target:
             assert target is None
@@ -416,5 +418,64 @@ async def test_planner_tasks_briefing_and_rescheduled_reminders(database):
         now += timedelta(days=1)
         await scheduler.tick()
         assert sender.send_message.await_count == 4
+    finally:
+        await pool.close()
+
+
+async def test_task_alert_follows_deadline_cancels_claim_and_sends_once(database):
+    settings, *_ = database
+    pool = await create_pool(settings)
+    now = datetime(2026, 11, 6, 13, tzinfo=UTC)
+    owner = 501
+    store = AssistantStore(pool)
+    tasks = PlannerStore(pool)
+    planner = Planner(tasks, Notifications(store, None), "Europe/Moscow", clock=lambda: now)
+    sender = Mock(send_message=AsyncMock())
+    scheduler = Scheduler(store, bridge(), sender, clock=lambda: now)
+    try:
+        await migrate(pool)
+        await store.contact(owner, owner)
+        _, task = await planner.add_task(owner, "task", task_intent("Задача: отчёт в 18:00"))
+        assert await tasks.confirm(owner, task, now) == ("added", "t", task)
+        item = await tasks.item(owner, "t", task)
+        assert (await planner.task_alert(owner, "late", item, "120"))[1] is None
+        _, alarm = await planner.task_alert(owner, "arm", item, "30")
+        assert await tasks.confirm(owner + 1, alarm, now) == ("invalid", None, None)
+        assert await tasks.confirm(owner, alarm, now) == ("alert_set", "t", task)
+        item = await tasks.item(owner, "t", task)
+        assert (await planner.change(owner, "short", "t", item, "custom", custom="сегодня 16:15"))[
+            1
+        ] is None
+        _, move = await planner.change(owner, "move", "t", item, "custom", custom="сегодня 18:15")
+        assert await tasks.confirm(owner, move, now) == ("moved", "t", task)
+
+        now += timedelta(minutes=90)
+        await scheduler.tick()
+        sender.send_message.assert_not_awaited()
+        now += timedelta(minutes=15)
+        await scheduler.prepare_due()
+        event = await store.claim(now)
+        assert event["kind"] == "task_deadline" and event["task_id"] == task
+        item = await tasks.item(owner, "t", task)
+        _, off = await planner.task_alert(owner, "off", item, "off")
+        assert await tasks.confirm(owner, off, now) == ("alert_off", "t", task)
+        async with store.delivery(event, now) as target:
+            assert target is None
+        await scheduler.tick()
+        sender.send_message.assert_not_awaited()
+
+        item = await tasks.item(owner, "t", task)
+        _, alarm = await planner.task_alert(owner, "rearm", item, "20")
+        assert await tasks.confirm(owner, alarm, now) == ("alert_set", "t", task)
+        now += timedelta(minutes=10)
+        await asyncio.gather(scheduler.prepare_due(), scheduler.prepare_due())
+        await asyncio.gather(scheduler.deliver_one(), scheduler.deliver_one())
+        assert sender.send_message.await_count == 1
+        assert sender.send_message.call_args.args[0] == owner
+        assert "Дедлайн" in sender.send_message.call_args.args[1]
+        assert "18:15" in sender.send_message.call_args.args[1]
+        await migrate(pool)
+        await scheduler.tick()
+        assert sender.send_message.await_count == 1
     finally:
         await pool.close()

@@ -9,7 +9,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from app.handlers.assistant import send_parts
 from app.planner import DAILY_PATTERN, MOVE_CHOICES, task_intent, when_text
 from app.planner_store import PAGE_SIZE
-from app.presentation import confirmation_keyboard, planner_button, planner_item_rows
+from app.presentation import confirmation_keyboard, draft_button, planner_button, planner_item_rows
 
 TITLES = {"t": "📌 Задачи и дедлайны", "r": "🔔 Разовые напоминания"}
 HELP = {
@@ -21,6 +21,9 @@ RESULT = {
     "done": "✅ Отмечено готовым.",
     "done_today": "✅ Отмечено за сегодня. Серия продолжится завтра.",
     "moved": "🕒 Время изменено.",
+    "alert_set": "🔔 Оповещение настроено.",
+    "alert_off": "🔕 Оповещение отключено.",
+    "too_soon": "Для оповещения слишком поздно. Выберите срок позже или измените оповещение.",
     "cancelled": "Действие отменено.",
     "past": "Это время уже прошло. Создайте новое подтверждение.",
     "invalid": "Карточка уже использована, устарела или недействительна.",
@@ -42,7 +45,7 @@ def menu_button(label, kind, offset=0):
     return InlineKeyboardButton(text=label, callback_data=f"plan:list:{kind}:{offset}")
 
 
-def create_planner_router(planner):
+def create_planner_router(planner, *, bot_username=None):
     router = Router(name="planner")
     router.message.filter(F.chat.type == "private", F.from_user.is_bot == False)  # noqa: E712
     router.callback_query.filter(F.message.chat.type == "private")
@@ -73,6 +76,12 @@ def create_planner_router(planner):
             pages.append(menu_button("Следующие →", kind, offset + PAGE_SIZE))
         if pages:
             rows.append(pages)
+        label, command = (
+            ("➕ Добавить задачу", "/tasks add ")
+            if kind == "t"
+            else ("➕ Добавить напоминание", "/remind ")
+        )
+        rows.append([draft_button(label, command, bot_username)])
         if kind == "r":
             rows.append(
                 [InlineKeyboardButton(text="🔁 Ежедневные напоминания", callback_data="daily:menu")]
@@ -95,6 +104,33 @@ def create_planner_router(planner):
         )
         title = "Выберите перенос" if moving else notice
         text = f"{item['text']}\n\n{when_text(kind, item)}"
+        reference = f"{kind}-{item['id'].hex}-{item['version']}"
+        if moving:
+            label = "✏️ Своё время" if kind == "d" else "📅 Своя дата и время"
+            buttons.insert(0, [draft_button(label, f"/move {reference} ", bot_username)])
+            text += (
+                "\n\nВведите новое время, например 19:30."
+                if kind == "d"
+                else "\n\nВведите дату и время, например 2026-11-20 18:30."
+            )
+        elif kind == "t" and item["due_at"]:
+            lead = item.get("notify_before")
+            text += f"\n🔔 За {lead} мин." if lead else "\n🔕 Оповещение выключено."
+            buttons.append(
+                [
+                    draft_button(
+                        "🔔 За сколько минут оповестить?", f"/task_alert {reference} ", bot_username
+                    )
+                ]
+            )
+            if lead:
+                buttons.append(
+                    [
+                        draft_button(
+                            "🔕 Отключить оповещение", f"/task_alert {reference} off", bot_username
+                        )
+                    ]
+                )
         if title:
             text = f"{title}\n\n{text}"
         await send_parts(
@@ -103,7 +139,45 @@ def create_planner_router(planner):
 
     @router.message(Command("tasks", "reminders"))
     async def menu(message: Message, command: CommandObject):
-        await listing(message, message.from_user.id, "t" if command.command == "tasks" else "r")
+        owner = message.from_user.id
+        args = (command.args or "").split(maxsplit=1)
+        if command.command == "tasks" and len(args) == 2 and args[0] == "add":
+            intent = task_intent("Задача: " + args[1])
+            if intent:
+                text, pending = await planner.add_task(
+                    owner, f"telegram:{message.chat.id}:{message.message_id}", intent
+                )
+                await reply(message, text, pending)
+                return
+        await listing(message, owner, "t" if command.command == "tasks" else "r")
+
+    @router.message(Command("move", "task_alert"))
+    async def custom(message: Message, command: CommandObject):
+        owner = message.from_user.id
+        args = (command.args or "").split(maxsplit=1)
+        alert = command.command == "task_alert"
+        try:
+            reference, value = args
+            kind, raw_id, raw_version = reference.split("-")
+            identity, version = uuid.UUID(hex=raw_id), int(raw_version)
+            if kind not in MOVE_CHOICES or (alert and kind != "t"):
+                raise ValueError
+        except ValueError:
+            await reply(
+                message, "Откройте карточку и допишите значение после подставленной команды."
+            )
+            return
+        item = await planner.store.item(owner, kind, identity)
+        if not item or item["version"] != version:
+            await reply(message, RESULT["stale"])
+            return
+        key = f"telegram:{message.chat.id}:{message.message_id}"
+        text, pending = (
+            await planner.task_alert(owner, key, item, value.strip().lower())
+            if alert
+            else await planner.change(owner, key, kind, item, "custom", custom=value.strip())
+        )
+        await reply(message, text, pending)
 
     @router.message(text_intent)
     async def create(message: Message, intent):

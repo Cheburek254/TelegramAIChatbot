@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS assistant_daily_pending (
 ALTER TABLE assistant_outbox ADD COLUMN IF NOT EXISTS daily_reminder_id UUID;
 ALTER TABLE assistant_outbox DROP CONSTRAINT IF EXISTS assistant_outbox_kind_check;
 ALTER TABLE assistant_outbox ADD CONSTRAINT assistant_outbox_kind_check
- CHECK(kind IN ('reminder_delivery','daily_briefing','daily_reminder_delivery'));
+ CHECK(kind IN ('reminder_delivery','daily_briefing','daily_reminder_delivery','task_deadline'));
 CREATE INDEX IF NOT EXISTS assistant_outbox_daily_series ON assistant_outbox(daily_reminder_id)
  WHERE daily_reminder_id IS NOT NULL;
 """
@@ -264,6 +264,21 @@ class AssistantStore:
             "JOIN assistant_profiles p ON p.user_id=r.user_id WHERE r.remind_at<=$1 "
             "AND p.destination_chat_id IS NOT NULL AND r.completed_at IS NULL "
             "ON CONFLICT(event_key) DO NOTHING",
+            now,
+        )
+
+    async def enqueue_task_alerts(self, now):
+        await self.pool.execute(
+            "INSERT INTO assistant_outbox(id,event_key,user_id,kind,due_at,deadline,"
+            "task_id,available_at,reminder_version) "
+            "SELECT gen_random_uuid(),'task:'||t.id::text||':'||t.version,"
+            "t.user_id,'task_deadline',"
+            "a.due,least(t.due_at,a.due+interval '15 minutes'),t.id,a.due,t.version "
+            "FROM personal_tasks t JOIN assistant_profiles p USING(user_id) "
+            "CROSS JOIN LATERAL (SELECT t.due_at-make_interval(mins=>t.notify_before) AS due) a "
+            "WHERE p.destination_chat_id=t.user_id AND t.completed_at IS NULL "
+            "AND t.notify_before IS NOT NULL AND t.due_at>$1 AND a.due<=$1 "
+            "AND a.due>=$1-interval '15 minutes' ON CONFLICT(event_key) DO NOTHING",
             now,
         )
 
@@ -484,6 +499,18 @@ class AssistantStore:
                         event["reminder_version"],
                     )
                 )
+            elif event["kind"] == "task_deadline":
+                valid = (
+                    valid
+                    and row["destination_chat_id"] == event["user_id"]
+                    and await conn.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM personal_tasks WHERE user_id=$1 AND id=$2 "
+                        "AND version=$3 AND notify_before IS NOT NULL AND completed_at IS NULL)",
+                        event["user_id"],
+                        event["task_id"],
+                        event["reminder_version"],
+                    )
+                )
             if not valid:
                 await conn.execute(
                     "UPDATE assistant_outbox SET state=$3,payload=NULL WHERE id=$1 "
@@ -543,7 +570,8 @@ class AssistantStore:
         await self.pool.execute("DELETE FROM assistant_daily_pending WHERE expires_at<$1", now)
         await self.pool.execute("DELETE FROM planner_actions WHERE expires_at<$1", now)
         await self.pool.execute(
-            "DELETE FROM assistant_outbox WHERE kind='daily_reminder_delivery' "
+            "DELETE FROM assistant_outbox "
+            "WHERE kind IN ('daily_reminder_delivery','task_deadline') "
             "AND deadline<$1 AND state IN ('sent','missed','failed','cancelled')",
             now - timedelta(days=30),
         )

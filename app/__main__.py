@@ -137,6 +137,8 @@ async def run(settings: Settings) -> None:
                         ("notifications", "Настройки уведомлений"),
                         ("daily_reminders", "Мои ежедневные напоминания"),
                         ("reminders", "Мои разовые напоминания"),
+                        ("remind", "Создать разовое напоминание"),
+                        ("weather", "Погода в выбранном городе"),
                         ("tasks", "Мои задачи и дедлайны"),
                         ("trace", "Путь обработки последнего запроса"),
                     ]
@@ -151,15 +153,21 @@ async def run(settings: Settings) -> None:
             dispatcher.callback_query.outer_middleware(ContactMiddleware(store))
             dispatcher.include_router(
                 create_planner_router(
-                    Planner(PlannerStore(state.pool), notifications, settings.mcp_resource_timezone)
+                    Planner(
+                        PlannerStore(state.pool), notifications, settings.mcp_resource_timezone
+                    ),
+                    bot_username=me.username,
                 )
             )
             dispatcher.include_router(
                 create_feature_router(
-                    notifications, agent, PersonalMaterials(MaterialStore(state.pool))
+                    notifications,
+                    agent,
+                    PersonalMaterials(MaterialStore(state.pool)),
+                    bot_username=me.username,
                 )
             )
-        dispatcher.include_router(create_router())
+        dispatcher.include_router(create_router(bot_username=me.username))
         runner = await start_health_server(state, settings.health_port)
         state.polling_task = asyncio.create_task(
             dispatcher.start_polling(

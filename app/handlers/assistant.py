@@ -17,6 +17,7 @@ from app.itmo_login import LoginError
 from app.llm import LLMError
 from app.presentation import (
     confirmation_keyboard,
+    draft_button,
     formatted_parts,
     main_keyboard,
     section_keyboard,
@@ -53,7 +54,7 @@ STORAGE_ERROR = "Не удалось обработать запрос. Попр
 CONTEXT_ERROR = "Сообщение слишком большое для контекста. Сократите его и отправьте снова."
 
 
-def create_router() -> Router:
+def create_router(*, bot_username=None) -> Router:
     router = Router(name="assistant")
     router.message.filter(F.chat.type == "private", F.from_user.is_bot == False)  # noqa: E712
     router.callback_query.filter(F.message.chat.type == "private")
@@ -121,6 +122,7 @@ def create_router() -> Router:
             message,
             assistant.preferences(message.from_user.id, (command.args or "").strip()),
             settings=True,
+            bot_username=bot_username,
         )
 
     @router.message(Command("tools", "timezone", "why"))
@@ -141,7 +143,9 @@ def create_router() -> Router:
             message,
             answer,
             keyboard=(
-                settings_keyboard() if command.command == "timezone" else section_keyboard("tools")
+                settings_keyboard(bot_username)
+                if command.command == "timezone"
+                else section_keyboard("tools", bot_username)
             ),
         )
 
@@ -158,7 +162,7 @@ def create_router() -> Router:
             result = await schedule_service.command(
                 message.from_user.id, command.args or "", f"message:{message.message_id}"
             )
-            await send_schedule_reply(message, result)
+            await send_schedule_reply(message, result, bot_username)
         except (asyncpg.PostgresError, OSError, TimeoutError):
             await send_parts(message, STORAGE_ERROR)
 
@@ -177,8 +181,19 @@ def create_router() -> Router:
                 return
             elif query.data in {"schedule:put", "schedule:get", "schedule:repeat"}:
                 section = query.data.split(":")[1]
+                hints = {
+                    "put": "Для разового занятия допишите дату, время, название и место.\n\n"
+                    "Пример: 2026-11-20 10:00-11:30 | Математика | 301",
+                    "get": "Для выбранной даты допишите её в формате ГГГГ-ММ-ДД.",
+                    "repeat": "Выберите чётность, затем допишите начало, конец, день недели "
+                    "(1=пн…7=вс), дату первой недели, время, название и место.\n\n"
+                    "Пример: 2026-11-16 2026-12-28 1 2026-09-07 "
+                    "10:00-11:30 | Математика | 301",
+                }
                 await query.message.answer(
-                    "📅 Выберите действие", parse_mode=None, reply_markup=section_keyboard(section)
+                    hints[section],
+                    parse_mode=None,
+                    reply_markup=section_keyboard(section, bot_username),
                 )
                 return
             elif query.data in {
@@ -209,9 +224,19 @@ def create_router() -> Router:
                         "/schedule edit 7 2026-11-02 12:00-13:30 | Математика | 305\n"
                         "/schedule delete 7 — одна пара\n/schedule delete_series 7 — вся серия"
                     )
-                await query.message.answer(
-                    content, parse_mode=None, reply_markup=section_keyboard("put")
-                )
+                if choice == "edit_help":
+                    keyboard = section_keyboard("edit_schedule", bot_username)
+                else:
+                    draft = (
+                        "/schedule add " if choice == "single" else f"/schedule repeat {choice} "
+                    )
+                    keyboard = InlineKeyboardMarkup(
+                        inline_keyboard=[
+                            [draft_button("✏️ Ввести команду", draft, bot_username)],
+                            [InlineKeyboardButton(text="← Назад", callback_data="schedule:put")],
+                        ]
+                    )
+                await query.message.answer(content, parse_mode=None, reply_markup=keyboard)
                 return
             elif query.data in {"schedule:today", "schedule:week"}:
                 result = await schedule_service.button(
@@ -232,7 +257,7 @@ def create_router() -> Router:
                     await query.message.edit_reply_markup(reply_markup=None)
                 except Exception:
                     pass
-            await send_schedule_reply(query.message, result)
+            await send_schedule_reply(query.message, result, bot_username)
         except (ValueError, asyncpg.PostgresError, OSError, TimeoutError):
             await send_parts(query.message, STORAGE_ERROR)
 
@@ -330,23 +355,18 @@ def create_router() -> Router:
         except (asyncpg.PostgresError, OSError, TimeoutError):
             await send_parts(query.message, STORAGE_ERROR)
 
-    @router.message(F.text.startswith("/"))
-    async def unknown(message: Message):
-        await message.answer("Неизвестная команда. Список команд: /start.", parse_mode=None)
-
-    @router.message(F.text)
-    async def text(message: Message, assistant: Assistant, agent: Agent | None = None):
-        if not message.text.strip():
+    async def respond_text(message, prompt, assistant, agent):
+        if not prompt.strip():
             await message.answer("Пришлите непустое текстовое сообщение.", parse_mode=None)
             return
         try:
             async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
                 result = (
                     await agent.respond(
-                        message.from_user.id, message.text, f"message:{message.message_id}"
+                        message.from_user.id, prompt, f"message:{message.message_id}"
                     )
                     if agent
-                    else await assistant.respond(message.from_user.id, message.text)
+                    else await assistant.respond(message.from_user.id, prompt)
                 )
             answer = result.content
             if getattr(result, "pending_id", None):
@@ -373,6 +393,34 @@ def create_router() -> Router:
         await send_with_trace(
             message, send_parts(message, answer, format_model=True), agent, locals().get("result")
         )
+
+    @router.message(Command("remind", "weather"))
+    async def tool_command(
+        message: Message, command: CommandObject, assistant: Assistant, agent: Agent | None = None
+    ):
+        args = (command.args or "").strip()
+        reminder = command.command == "remind"
+        if agent is None:
+            await send_parts(message, "Инструменты сейчас недоступны.")
+            return
+        if not args:
+            hint = (
+                "Допишите время и текст. Пример: /remind завтра в 18:00 подготовить отчёт."
+                if reminder
+                else "Допишите город. Пример: /weather Санкт-Петербург, Россия."
+            )
+            await send_parts(message, hint)
+            return
+        prompt = f"Напомни {args}" if reminder else f"Какая погода в {args}?"
+        await respond_text(message, prompt, assistant, agent)
+
+    @router.message(F.text.startswith("/"))
+    async def unknown(message: Message):
+        await message.answer("Неизвестная команда. Список команд: /start.", parse_mode=None)
+
+    @router.message(F.text)
+    async def text(message: Message, assistant: Assistant, agent: Agent | None = None):
+        await respond_text(message, message.text, assistant, agent)
 
     @router.callback_query(F.data.startswith("reminder:"))
     async def reminder(query: CallbackQuery, agent: Agent | None = None):
@@ -420,9 +468,9 @@ def create_router() -> Router:
                 content,
                 parse_mode=None,
                 reply_markup=(
-                    settings_keyboard()
+                    settings_keyboard(bot_username)
                     if query.data == "agent:timezone"
-                    else section_keyboard("tools")
+                    else section_keyboard("tools", bot_username)
                 ),
             )
         except (asyncpg.PostgresError, OSError, TimeoutError):
@@ -440,7 +488,17 @@ def create_router() -> Router:
             "Сначала задайте зону в настройках. Создание потребует подтверждения. "
             "Подтверждённое напоминание будет отправлено в этот личный чат в назначенное время."
         )
-        await query.message.answer(content, parse_mode=None, reply_markup=section_keyboard("tools"))
+        command = "/weather " if query.data == "tool:weather" else "/remind "
+        await query.message.answer(
+            content,
+            parse_mode=None,
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [draft_button("✏️ Ввести команду", command, bot_username)],
+                    [InlineKeyboardButton(text="← Инструменты", callback_data="agent:tools")],
+                ]
+            ),
+        )
 
     @router.callback_query(
         F.data.in_({"menu", "settings", "reset"})
@@ -454,14 +512,25 @@ def create_router() -> Router:
         if query.data == "menu":
             await query.message.answer(START_TEXT, parse_mode="HTML", reply_markup=main_keyboard())
         elif query.data == "settings":
-            await perform(query.message, assistant.preferences(query.from_user.id), settings=True)
+            await perform(
+                query.message,
+                assistant.preferences(query.from_user.id),
+                settings=True,
+                bot_username=bot_username,
+            )
         elif query.data == "reset":
-            await perform(query.message, assistant.reset(query.from_user.id), settings=True)
+            await perform(
+                query.message,
+                assistant.reset(query.from_user.id),
+                settings=True,
+                bot_username=bot_username,
+            )
         elif query.data.startswith("temperature:"):
             await perform(
                 query.message,
                 assistant.preferences(query.from_user.id, query.data.split(":", 1)[1]),
                 settings=True,
+                bot_username=bot_username,
             )
         elif query.data.split(":", 1)[1] in {"study", "translate", "review"}:
             await perform(
@@ -471,7 +540,7 @@ def create_router() -> Router:
     return router
 
 
-async def send_schedule_reply(message, result):
+async def send_schedule_reply(message, result, bot_username=None):
     if result.pending_id:
         from app.presentation import confirmation_keyboard
 
@@ -488,7 +557,9 @@ async def send_schedule_reply(message, result):
             )
     else:
         for part in split_telegram(result.content):
-            await message.answer(part, parse_mode=None, reply_markup=section_keyboard("schedule"))
+            await message.answer(
+                part, parse_mode=None, reply_markup=section_keyboard("schedule", bot_username)
+            )
 
 
 async def send_with_trace(message, operation, agent, result):
@@ -523,7 +594,9 @@ async def send_parts(
             await message.answer(part, parse_mode=None, reply_markup=keyboard or main_keyboard())
 
 
-async def perform(message: Message, operation, *, settings: bool = False) -> None:
+async def perform(
+    message: Message, operation, *, settings: bool = False, bot_username=None
+) -> None:
     try:
         answer = await operation
     except (asyncpg.PostgresError, OSError, TimeoutError):
@@ -533,5 +606,5 @@ async def perform(message: Message, operation, *, settings: bool = False) -> Non
     await message.answer(
         f"<b>{title}</b>\n\n{escape(answer)}",
         parse_mode="HTML",
-        reply_markup=settings_keyboard() if settings else main_keyboard(),
+        reply_markup=settings_keyboard(bot_username) if settings else main_keyboard(),
     )

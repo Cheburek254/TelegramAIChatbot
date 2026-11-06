@@ -3,7 +3,7 @@
 import re
 from datetime import UTC, date, datetime, time, timedelta
 
-from app.material_service import format_briefing_time
+from app.material_service import format_briefing_time, parse_briefing_time
 from app.timezones import local_candidates, zone
 
 TASK_PREFIX = r"^(?:задача\s*:\s*|(?:добавь|создай|поставь)\s+задачу\s*[:—]?\s+)"
@@ -36,6 +36,8 @@ MOVE_CHOICES = {
     "r": (("На час позже", "hour"), ("На день позже", "day"), ("На неделю позже", "week")),
     "d": (("На час раньше", "earlier"), ("На час позже", "hour")),
 }
+MOVE_WHEN = re.compile(rf"^(?P<day>{DAY})\s+(?P<hour>[0-9]{{1,2}}):(?P<minute>[0-9]{{2}})$", re.I)
+MAX_ALERT_MINUTES = 10080
 
 
 def task_intent(text):
@@ -116,7 +118,7 @@ class Planner:
             pending,
         )
 
-    async def change(self, owner, key, kind, item, option):
+    async def change(self, owner, key, kind, item, option, custom=None):
         now = self.clock()
         if option == "done":
             today = now.astimezone(zone(item["timezone"])).date() if kind == "d" else None
@@ -135,7 +137,25 @@ class Planner:
             title = f"Отметить готовым за {today:%d.%m}?" if today else "Отметить готовым?"
             return f"✅ {title}\n\n{item['text']}", pending
         timezone = item["timezone"]
-        if kind == "d":
+        if custom is not None:
+            minute, due = None, None
+            try:
+                if kind == "d":
+                    minute = parse_briefing_time(custom)
+                else:
+                    match = MOVE_WHEN.fullmatch(custom)
+                    if not match:
+                        raise ValueError
+                    due = local_due(match, now, timezone)
+            except (ValueError, OverflowError):
+                hint = (
+                    "Укажите время в формате ЧЧ:ММ, например 19:30."
+                    if kind == "d"
+                    else "Укажите будущие дату и время, например 2026-11-20 18:30."
+                )
+                return hint, None
+            label = when_text(kind, {"minute": minute, "timezone": timezone, "due_at": due})
+        elif kind == "d":
             minute = (item["minute"] + (60 if option == "hour" else -60)) % 1440
             due = None
             label = when_text(kind, {"minute": minute, "timezone": timezone})
@@ -155,6 +175,12 @@ class Planner:
                     return "В новой дате это время неоднозначно. Выберите другой перенос.", None
                 due = candidates[0].astimezone(UTC)
             label = when_text("t", {"due_at": due, "timezone": timezone})
+        lead = item.get("notify_before") if kind == "t" else None
+        if lead and due <= now + timedelta(minutes=lead):
+            return (
+                f"До нового срока меньше {lead} мин. Измените оповещение или выберите срок позже.",
+                None,
+            )
         pending = await self.store.proposal(
             owner,
             key,
@@ -167,3 +193,32 @@ class Planner:
             minute=minute,
         )
         return f"🕒 Перенести на {label}?\n\n{item['text']}", pending
+
+    async def task_alert(self, owner, key, item, value):
+        now = self.clock()
+        if value == "off":
+            minute, alarm_at = None, None
+            label = "Отключить оповещение?"
+        else:
+            if not re.fullmatch(r"[0-9]{1,5}", value) or not 1 <= int(value) <= MAX_ALERT_MINUTES:
+                return f"Укажите от 1 до {MAX_ALERT_MINUTES} минут или off для отключения.", None
+            if not item["due_at"]:
+                return "Сначала задайте дедлайн кнопкой «Перенести».", None
+            minute = int(value)
+            if item["due_at"] <= now + timedelta(minutes=minute):
+                return "Это время оповещения уже прошло. Укажите меньше минут.", None
+            alarm_at = item["due_at"] - timedelta(minutes=minute)
+            when = alarm_at.astimezone(zone(item["timezone"]))
+            label = f"Оповестить за {minute} мин. · {when:%d.%m.%Y %H:%M}?"
+        pending = await self.store.proposal(
+            owner,
+            key,
+            now,
+            "t",
+            "notify",
+            target=item["id"],
+            version=item["version"],
+            due_at=alarm_at,
+            minute=minute,
+        )
+        return f"🔔 {label}\n\n{item['text']}", pending

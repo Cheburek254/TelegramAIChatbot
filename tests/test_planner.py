@@ -1,6 +1,7 @@
 import uuid
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, Mock
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from aiogram import Bot, Dispatcher
@@ -43,6 +44,7 @@ async def test_telegram_task_and_daily_routes_and_buttons():
         proposal=AsyncMock(return_value=pending),
         item=AsyncMock(return_value=item),
         confirm=AsyncMock(return_value=("added", "t", identity)),
+        active=AsyncMock(return_value=[]),
     )
     notifications = Mock(
         store=Mock(profile=AsyncMock(return_value={"timezone": ZONE})),
@@ -50,7 +52,7 @@ async def test_telegram_task_and_daily_routes_and_buttons():
     )
     service = Planner(store, notifications, ZONE, clock=lambda: NOW)
     dispatcher = Dispatcher()
-    dispatcher.include_router(create_planner_router(service))
+    dispatcher.include_router(create_planner_router(service, bot_username="synthetic_bot"))
     bot = Bot("123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk")
     bot.session = AsyncMock()
     user = User(id=101, first_name="Test", is_bot=False)
@@ -69,6 +71,13 @@ async def test_telegram_task_and_daily_routes_and_buttons():
         await dispatcher.feed_update(bot, Update(update_id=2, callback_query=query))
         return bot.session.call_args.args[1]
 
+    def draft(button):
+        return parse_qs(urlsplit(button.url).query)["text"][0]
+
+    tasks = await send("/tasks")
+    assert draft(tasks.reply_markup.inline_keyboard[0][0]) == "/tasks add "
+    added = await send("/tasks add Сдать отчёт завтра в 18:00")
+    assert "07.11.2026 18:00" in added.text
     proposal = await send("Сдать отчёт в пятницу до 18:00")
     assert "18:00" in proposal.text
     confirm = proposal.reply_markup.inline_keyboard[0][0].callback_data
@@ -79,7 +88,14 @@ async def test_telegram_task_and_daily_routes_and_buttons():
     ready, move = card.reply_markup.inline_keyboard[0]
     assert ready.text == "✅ Готово"
     menu = await press(move.callback_data)
-    later = menu.reply_markup.inline_keyboard[1][0].callback_data
+    exact = draft(menu.reply_markup.inline_keyboard[0][0])
+    assert exact == f"/move t-{identity.hex}-1 "
+    change = await send(exact + "2026-11-08 17:45")
+    assert "08.11.2026 17:45" in change.text
+    assert store.proposal.call_args.kwargs["due_at"].isoformat() == "2026-11-08T14:45:00+00:00"
+    await send(exact + "2026-11-05 17:45")
+    assert store.proposal.call_args.kwargs["due_at"].isoformat() == "2026-11-08T14:45:00+00:00"
+    later = menu.reply_markup.inline_keyboard[2][0].callback_data
     change = await press(later)
     assert "Перенести" in change.text
     assert store.proposal.call_args.args[-2:] == ("t", "move")
@@ -90,3 +106,15 @@ async def test_telegram_task_and_daily_routes_and_buttons():
     notifications.add_daily.assert_awaited_once_with(
         101, "telegram:101:1", "add 19:00 повторить английский"
     )
+    item["due_at"] = datetime(2026, 11, 6, 12, tzinfo=UTC)
+    task_alert = draft(card.reply_markup.inline_keyboard[1][0])
+    assert task_alert == f"/task_alert t-{identity.hex}-1 "
+    alarm = await send(task_alert + "45")
+    assert "за 45 мин." in alarm.text
+    assert store.proposal.call_args.kwargs["minute"] == 45
+    item.update(minute=1140, skip_on=None)
+    reminder_move = await press(f"plan:move:d:{identity.hex}:1")
+    exact_daily = draft(reminder_move.reply_markup.inline_keyboard[0][0])
+    alarm = await send(exact_daily + "19:35")
+    assert "19:35" in alarm.text
+    assert store.proposal.call_args.kwargs["minute"] == 19 * 60 + 35

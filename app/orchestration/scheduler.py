@@ -184,6 +184,7 @@ class Scheduler:
     async def prepare_due(self):
         now = self.clock()
         await self.store.enqueue_reminders(now)
+        await self.store.enqueue_task_alerts(now)
         for reminder in await self.store.active_daily_reminders():
             for due, local_date in daily_reminder_times(reminder, now - timedelta(minutes=15), now):
                 await self.store.enqueue_daily_reminder(reminder, due, local_date)
@@ -225,6 +226,21 @@ class Scheduler:
                     )
                     if self.clock() > event["due_at"] + timedelta(minutes=1 if daily else 0):
                         text += "\n⏱ Доставлено с задержкой."
+                elif event["kind"] == "task_deadline":
+                    task = await PlannerStore(self.store.pool).item(
+                        event["user_id"], "t", event["task_id"]
+                    )
+                    if not task or task["version"] != event["reminder_version"]:
+                        async with self.store.delivery(event, self.clock()):
+                            pass
+                        return True
+                    local = task["due_at"].astimezone(zone(task["timezone"]))
+                    text = (
+                        f"🔔 Дедлайн · {local:%d.%m.%Y %H:%M} ({task['timezone']})\n{task['text']}"
+                    )
+                    send_options["reply_markup"] = InlineKeyboardMarkup(
+                        inline_keyboard=planner_item_rows("t", task)
+                    )
                 else:
                     if (
                         not profile

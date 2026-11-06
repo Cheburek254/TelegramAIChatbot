@@ -57,8 +57,9 @@ def test_root_menu_hides_nested_actions_and_back_targets():
     root = [button.callback_data for row in main_keyboard().inline_keyboard for button in row]
     assert "schedule:menu" in root and "agent:tools" in root
     assert not {"reset", "agent:timezone", "agent:why", "schedule:put", "schedule:get"} & set(root)
-    settings = [b.callback_data for row in settings_keyboard().inline_keyboard for b in row]
-    assert {"reset", "agent:timezone", "menu"} <= set(settings)
+    settings = [b for row in settings_keyboard().inline_keyboard for b in row]
+    assert {"reset", "menu"} <= {b.callback_data for b in settings}
+    assert any(b.copy_text and b.copy_text.text == "/timezone " for b in settings)
     for name, target in [
         ("schedule", "menu"),
         ("tools", "menu"),

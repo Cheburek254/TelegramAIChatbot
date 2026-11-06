@@ -127,7 +127,11 @@ class ScheduleService:
                 )
             if operation == "repeat":
                 timing, title, location = tokens[1].split("|")
-                first, last, weekday, parity, anchor, interval = timing.split()
+                fields = timing.split()
+                if fields and fields[0] in {"all", "odd", "even"}:
+                    parity, first, last, weekday, anchor, interval = fields
+                else:
+                    first, last, weekday, parity, anchor, interval = fields
                 start, end = interval.split("-")
                 repeat = ScheduleRepeat(
                     date=first,
