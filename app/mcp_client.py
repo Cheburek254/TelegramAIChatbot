@@ -55,7 +55,6 @@ class MCPBridge:
                 "POSTGRES_DB",
                 "POSTGRES_USER",
                 "POSTGRES_PASSWORD",
-                "MCP_SCHEDULE_PATH",
                 "MCP_RESOURCE_TIMEZONE",
             )
         }
