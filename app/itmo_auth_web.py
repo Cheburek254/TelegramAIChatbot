@@ -9,21 +9,11 @@ from pathlib import Path
 
 from aiohttp import web
 
+from app.itmo_auth_web_messages import login_message
 from app.itmo_login import LoginError
 from app.miniapp import MINIAPP_CSP
 
 ASSETS = Path("assets/itmo-auth")
-MESSAGES = {
-    "expired_link": "Ссылка устарела или уже использована. Откройте новую ссылку в боте.",
-    "rate_limited": "Слишком много попыток. Подождите 10 минут.",
-    "invalid_input": "Введите логин и пароль.",
-    "credentials_or_extra_step": (
-        "Проверьте логин и пароль. Если ИТМО требует 2FA, CAPTCHA или смену пароля, "
-        "войдите обычным способом и используйте подключение по токену."
-    ),
-    "provider_unavailable": "Сервис ИТМО не ответил. Повторите позже.",
-    "unexpected_login_page": "Форма ИТМО изменилась. Используйте подключение по токену.",
-}
 
 
 def create_auth_app(service, *, miniapp=None):
@@ -120,9 +110,7 @@ def create_auth_app(service, *, miniapp=None):
             )
             return web.json_response({"account": account})
         except LoginError as exc:
-            return web.json_response(
-                {"error": MESSAGES.get(str(exc), "Вход не выполнен. Повторите позже.")}, status=400
-            )
+            return web.json_response({"error": login_message(str(exc))}, status=400)
         except (ValueError, TypeError):
             return web.json_response({"error": "Проверьте поля формы."}, status=400)
 

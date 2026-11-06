@@ -88,6 +88,7 @@ async def run(settings: Settings) -> None:
         )
         store = AssistantStore(state.pool)
         planner_store = PlannerStore(state.pool)
+        geography = Geography(Weather(llm_session))
         if settings.itmo_auth_public_url:
             from urllib.parse import urlsplit
 
@@ -112,6 +113,8 @@ async def run(settings: Settings) -> None:
                 schedule_service,
                 planner_store,
                 store,
+                geography=geography,
+                itmo_auth=itmo_auth,
             )
             auth_runner = await start_auth_server(
                 itmo_auth, settings.itmo_auth_port, miniapp=miniapp
@@ -125,7 +128,7 @@ async def run(settings: Settings) -> None:
             agent = Agent(settings, AgentStore(state.pool), assistant.llm, bridge)
             if settings.supervisor_enabled:
                 agent = Supervisor(settings, store, assistant, bridge)
-                notifications = Notifications(store, Geography(Weather(llm_session)))
+                notifications = Notifications(store, geography)
                 watch_store = ItmoWatchStore(state.pool)
                 scheduler = Scheduler(
                     store,

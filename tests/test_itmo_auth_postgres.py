@@ -40,7 +40,10 @@ async def test_itmo_login_owner_confirmation_encryption_replays_expiry_and_rate(
         assert not (tmp_path / "101" / "state.json").exists()
         with pytest.raises(LoginError):
             await auth.confirm(101, identity)
-        await auth.sign_in(secret, "111111", "synthetic-password")
+        with pytest.raises(LoginError, match="expired_link"):
+            await auth.sign_in(secret, "111111", "synthetic-password", owner=202)
+        login.login.assert_not_called()
+        await auth.sign_in(secret, "111111", "synthetic-password", owner=101)
         row = await auth.status(101, identity)
         assert refresh not in row["encrypted_token"]
         assert load_cipher(tmp_path).decrypt(row["encrypted_token"].encode()).decode() == refresh

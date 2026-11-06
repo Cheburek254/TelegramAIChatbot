@@ -1,5 +1,6 @@
 import hmac
 import json
+import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, Mock
 from urllib.parse import urlencode
@@ -40,13 +41,29 @@ async def test_miniapp_only_reads_for_verified_owner_and_serves_private_routes()
     planner = Mock(
         active=AsyncMock(
             return_value=[
-                {"text": "Report", "due_at": NOW, "timezone": "Europe/Moscow", "repeat_days": 7}
+                {
+                    "id": uuid.uuid4(),
+                    "version": 1,
+                    "text": "Report",
+                    "due_at": NOW,
+                    "timezone": "Europe/Moscow",
+                    "repeat_days": 7,
+                }
             ]
-        )
+        ),
+        history=AsyncMock(return_value=[]),
     )
     notifications = Mock(
         daily_reminders=AsyncMock(
-            return_value=[{"text": "Read", "minute": 1140, "timezone": "Europe/Moscow"}]
+            return_value=[
+                {
+                    "id": uuid.uuid4(),
+                    "version": 1,
+                    "text": "Read",
+                    "minute": 1140,
+                    "timezone": "Europe/Moscow",
+                }
+            ]
         )
     )
     miniapp = MiniApp(ORIGIN, TOKEN, schedule, planner, notifications, clock=lambda: NOW)
@@ -94,6 +111,58 @@ async def test_miniapp_only_reads_for_verified_owner_and_serves_private_routes()
         reminders = await request(signed(102), "reminders")
         assert (await reminders.json())["items"][0]["when"] == "19:00"
         notifications.daily_reminders.assert_awaited_once_with(102)
+
+
+async def test_miniapp_itmo_login_and_weather_use_signed_owner():
+    ticket_id = uuid.uuid4()
+    auth = Mock(
+        public_url=ORIGIN,
+        cipher=Fernet(Fernet.generate_key()),
+        issue_ticket=AsyncMock(return_value=(ticket_id, "synthetic-ticket")),
+        sign_in=AsyncMock(return_value="fixture-account"),
+        confirm=AsyncMock(),
+    )
+    profiles = Mock(profile=AsyncMock(return_value={"city": None}))
+    geography = Mock(current=AsyncMock(return_value=Mock(model_dump=lambda **_: {"status": "ok"})))
+    miniapp = MiniApp(
+        ORIGIN,
+        TOKEN,
+        Mock(),
+        Mock(),
+        profiles,
+        geography=geography,
+        itmo_auth=auth,
+        clock=lambda: NOW,
+    )
+    async with TestClient(TestServer(create_auth_app(auth, miniapp=miniapp))) as client:
+
+        async def request(init_data, **payload):
+            return await client.post(
+                "/miniapp/api", headers={"Origin": ORIGIN}, json={"init_data": init_data, **payload}
+            )
+
+        user = signed(101)
+        assert (await request("invalid", action="itmo_issue")).status == 401
+        auth.issue_ticket.assert_not_called()
+        issue = await request(user, action="itmo_issue")
+        assert await issue.json() == {"id": str(ticket_id), "ticket": "synthetic-ticket"}
+        result = await request(
+            user,
+            action="itmo_sign_in",
+            ticket="synthetic-ticket",
+            username="fixture-login",
+            password="fixture-password",
+        )
+        assert await result.json() == {"account": "fixture-account"}
+        auth.sign_in.assert_awaited_once_with(
+            "synthetic-ticket", "fixture-login", "fixture-password", owner=101
+        )
+        auth.confirm.assert_not_called()
+        assert (await request(user, action="itmo_confirm", id=str(ticket_id))).status == 200
+        auth.confirm.assert_awaited_once_with(101, ticket_id)
+        weather = await request(user, view="weather", offset=0)
+        assert (await weather.json())["default_city"] is True
+        assert geography.current.await_args.args[0]["name"] == "Санкт-Петербург"
 
 
 async def test_app_command_and_start_use_telegram_web_app_button():

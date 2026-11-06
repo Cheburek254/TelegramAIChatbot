@@ -36,7 +36,7 @@ ALTER TABLE planner_actions ADD COLUMN IF NOT EXISTS repeat_days INTEGER
  CHECK(repeat_days IN (1,7));
 ALTER TABLE planner_actions DROP CONSTRAINT IF EXISTS planner_actions_operation_check;
 ALTER TABLE planner_actions ADD CONSTRAINT planner_actions_operation_check
- CHECK(operation IN ('add','done','move') OR
+ CHECK(operation IN ('add','done','move','edit') OR
        (operation IN ('notify','restore','stop_repeat') AND kind='t') OR
        (operation='focus' AND kind='r'));
 ALTER TABLE agent_reminders ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1;
@@ -257,18 +257,25 @@ class PlannerStore:
             kind, operation, target = action["kind"], action["operation"], action["target"]
             if cancel:
                 return "cancelled", kind, target
+            if operation == "edit":
+                status = await self._edit(conn, owner, action, now)
+                return status, kind, target
             if action["due_at"] and action["due_at"] <= now:
                 return "past", kind, target
             if operation == "add":
+                lead = action["minute"]
+                if lead and action["due_at"] <= now + timedelta(minutes=lead):
+                    return "too_soon", kind, target
                 await conn.execute(
-                    "INSERT INTO personal_tasks(id,user_id,text,due_at,timezone,repeat_days) "
-                    "VALUES($1,$2,$3,$4,$5,$6)",
+                    "INSERT INTO personal_tasks(id,user_id,text,due_at,timezone,repeat_days,"
+                    "notify_before) VALUES($1,$2,$3,$4,$5,$6,$7)",
                     identity,
                     owner,
                     action["text"],
                     action["due_at"],
                     action["timezone"],
                     action["repeat_days"],
+                    lead,
                 )
                 return "added", kind, identity
             if operation == "restore":
@@ -360,3 +367,51 @@ class PlannerStore:
             if operation == "stop_repeat":
                 return "repeat_off", kind, target
             return "moved", kind, target
+
+    async def _edit(self, conn, owner, action, now):
+        kind, identity, version = action["kind"], action["target"], action["version"]
+        table, timing, active = ITEMS[kind]
+        where = f"WHERE user_id=$1 AND id=$2 AND version=$3 AND {active}"
+        row = await conn.fetchrow(
+            f"SELECT * FROM {table} {where} FOR UPDATE", owner, identity, version
+        )
+        if not row:
+            return "stale"
+        due, minute = action["due_at"], action["minute"]
+        if kind == "d":
+            await conn.execute(
+                "UPDATE assistant_daily_reminders SET text=$4,minute=$5,version=version+1,"
+                "starts_at=CASE WHEN minute=$5 THEN starts_at ELSE $6 END " + where,
+                owner,
+                identity,
+                version,
+                action["text"],
+                minute,
+                now,
+            )
+        else:
+            if due is not None and due <= now and due != row[timing]:
+                return "past"
+            if (
+                kind == "t"
+                and minute
+                and (due != row[timing] or minute != row["notify_before"])
+                and (not due or due <= now + timedelta(minutes=minute))
+            ):
+                return "too_soon"
+            values = (owner, identity, version, action["text"], due)
+            if kind == "t":
+                await conn.execute(
+                    "UPDATE personal_tasks SET text=$4,due_at=$5,notify_before=$6,repeat_days=$7,"
+                    "version=version+1 " + where,
+                    *values,
+                    minute,
+                    action["repeat_days"],
+                )
+            else:
+                await conn.execute(
+                    "UPDATE agent_reminders SET text=$4,remind_at=$5,version=version+1 " + where,
+                    *values,
+                )
+        await self._cancel_deliveries(conn, owner, kind, identity)
+        return "edited"

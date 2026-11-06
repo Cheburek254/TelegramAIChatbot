@@ -75,7 +75,9 @@ class ScheduleStore:
             source=SOURCE,
         )
 
-    async def prepare(self, owner, request_key, operation, identity, payload, now):
+    async def prepare(
+        self, owner, request_key, operation, identity, payload, now, *, expected_version=None
+    ):
         async with self.pool.acquire() as conn, conn.transaction():
             await self._lock(conn, owner)
             cached = await conn.fetchrow(
@@ -94,6 +96,8 @@ class ScheduleStore:
                 )
                 if not original:
                     raise ActionError("not_owned")
+                if expected_version is not None and original["version"] != expected_version:
+                    raise ActionError("stale_schedule")
             content = {"after": payload, "before": lesson_payload(original) if original else None}
             if operation == "delete_series":
                 if not original["series_id"]:

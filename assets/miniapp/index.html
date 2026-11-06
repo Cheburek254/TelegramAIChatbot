@@ -19,6 +19,7 @@
       <button type="button" data-view="schedule" aria-pressed="true">Расписание</button>
       <button type="button" data-view="tasks" aria-pressed="false">Задачи</button>
       <button type="button" data-view="reminders" aria-pressed="false">Напоминания</button>
+      <button type="button" data-view="weather" aria-pressed="false">Погода</button>
     </nav>
     <section class="panel" aria-labelledby="heading">
       <div class="panel-title">
@@ -28,11 +29,35 @@
         </div>
         <button type="button" id="refresh" hidden>Обновить</button>
       </div>
+      <div id="toolbar" class="toolbar" hidden></div>
       <p id="status" role="status">Откройте панель в Telegram.</p>
       <div id="items"></div>
+      <div id="completed"></div>
       <button type="button" id="more" hidden>Показать ещё</button>
     </section>
-    <p class="hint">Задачи и напоминания можно менять в чате с ботом.</p>
+    <p class="hint">План синхронизируется с чатом бота.</p>
   </main>
+  <dialog id="editor">
+    <form id="editor-form">
+      <h2 id="editor-title"></h2>
+      <div id="fields"></div>
+      <p id="form-status" role="alert"></p>
+      <div class="toolbar">
+        <button id="editor-close" type="button">Назад</button>
+        <button id="editor-submit" class="primary">Продолжить</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="review">
+    <form id="review-form">
+      <h2>Подтвердить изменение</h2>
+      <p id="review-text"></p>
+      <p id="review-status" role="alert"></p>
+      <div class="toolbar">
+        <button id="review-close" type="button">Отмена</button>
+        <button id="review-submit" class="primary">Подтвердить</button>
+      </div>
+    </form>
+  </dialog>
 </body>
 </html>

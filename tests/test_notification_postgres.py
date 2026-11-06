@@ -16,12 +16,15 @@ from app.itmo_watch import ItmoWatch
 from app.itmo_watch_store import ItmoWatchStore
 from app.mcp_client import MCPBridge, MCPFailure
 from app.migrations import migrate
+from app.miniapp_changes import FormError, MiniAppChanges
 from app.orchestration.notifications import Notifications
 from app.orchestration.scheduler import Scheduler
 from app.orchestration.store import AssistantStore
 from app.orchestration.tracing import Trace, span
 from app.planner import Planner, task_intent
 from app.planner_store import PlannerStore
+from app.schedule_service import ScheduleService
+from app.schedule_store import ScheduleStore
 from tests.test_integration import database as database
 from tests.test_supervisor import CITY, bridge
 
@@ -29,6 +32,96 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(os.getenv("RUN_INTEGRATION") != "1", reason="Отдельная PostgreSQL"),
 ]
+
+
+async def test_miniapp_confirmed_changes_share_planner_and_schedule(database):
+    settings, _, _, _ = database
+    pool = await create_pool(settings)
+    store = AssistantStore(pool)
+    planner = PlannerStore(pool)
+    now = datetime(2026, 11, 6, 10, tzinfo=UTC)
+    schedule = ScheduleService(ScheduleStore(pool), AgentStore(pool), clock=lambda: now)
+    service = MiniAppChanges(schedule, planner, store, lambda: now)
+    owner, other = 101, 202
+
+    async def prepare(**data):
+        domain, identity, _ = await service.prepare(owner, str(uuid.uuid4()), data, now)
+        return domain, identity
+
+    async def confirm(pending, actor=owner):
+        return (await service.confirm(actor, *pending, now))[0]
+
+    def reference(row):
+        return {"id": str(row["id"]), "version": row["version"]}
+
+    try:
+        await migrate(pool)
+        await migrate(pool)
+        await store.contact(owner, owner)
+        await store.contact(other, other)
+        lesson = {
+            "date": "2026-11-07",
+            "start": "12:00",
+            "end": "13:00",
+            "title": "Test",
+            "location": "42",
+        }
+        pending = await prepare(kind="lesson", operation="save", lesson=lesson)
+        assert not await confirm(pending, other)
+        assert not await schedule.store.entries(owner, now.date(), now.date() + timedelta(days=7))
+        assert await confirm(pending)
+        (row,) = await schedule.store.entries(owner, now.date(), now.date() + timedelta(days=7))
+        edit = dict(lesson, location="43")
+        assert await confirm(
+            await prepare(kind="lesson", operation="save", lesson=edit, **reference(row))
+        )
+        with pytest.raises(FormError):
+            await prepare(kind="lesson", operation="save", lesson=lesson, **reference(row))
+
+        task = await prepare(
+            kind="t", operation="save", text="Report", when="2026-11-07T18:00", lead=15, repeat=7
+        )
+        assert not await confirm(task, other)
+        assert await confirm(task)
+        assert not await confirm(task)
+        (row,) = await planner.active(owner, "t", 0)
+        assert row["notify_before"] == 15
+        assert await confirm(
+            await prepare(
+                kind="t", operation="save", text="Edited", when="2026-11-07T18:00", **reference(row)
+            )
+        )
+        (row,) = await planner.active(owner, "t", 0)
+        assert row["text"] == "Edited" and row["repeat_days"] is None
+        assert await confirm(
+            await prepare(kind="t", operation="move", when="2026-11-08T16:00", **reference(row))
+        )
+        (row,) = await planner.active(owner, "t", 0)
+        assert row["due_at"].day == 8
+        assert await confirm(await prepare(kind="t", operation="done", **reference(row)))
+        assert not await planner.active(owner, "t", 0)
+        assert (await planner.history(owner))[0]["text"] == "Edited"
+
+        for kind, initial, edited in (
+            ("r", "2026-11-07T18:00", "2026-11-08T15:00"),
+            ("d", "18:00", "15:00"),
+        ):
+            assert await confirm(
+                await prepare(kind=kind, operation="save", text="Reminder", when=initial)
+            )
+            (row,) = await planner.active(owner, kind, 0)
+            assert await confirm(
+                await prepare(
+                    kind=kind, operation="save", text="Renamed", when=edited, **reference(row)
+                )
+            )
+            (row,) = await planner.active(owner, kind, 0)
+            assert row["text"] == "Renamed"
+            assert (row["minute"] if kind == "d" else row["remind_at"].hour) == (
+                900 if kind == "d" else 12
+            )
+    finally:
+        await pool.close()
 
 
 async def test_personal_planning_confirmation_repeat_and_itmo_delivery(database):

@@ -37,14 +37,18 @@ class ITMOAuth:
         self.login = login or ITMOLogin()
         self.cipher = cipher or load_cipher(client.state_dir)
 
-    async def issue(self, owner):
+    async def issue_ticket(self, owner):
         secret = secrets.token_urlsafe(32)
         row = await self.store.create(
             owner, hashlib.sha256(secret.encode()).hexdigest(), self.clock()
         )
-        return row["id"], self.public_url + "/itmo/login#" + secret
+        return row["id"], secret
 
-    async def sign_in(self, secret, username, password):
+    async def issue(self, owner):
+        identity, secret = await self.issue_ticket(owner)
+        return identity, self.public_url + "/itmo/login#" + secret
+
+    async def sign_in(self, secret, username, password, *, owner=None):
         if not isinstance(secret, str) or len(secret) != 43:
             raise LoginError("expired_link")
         if (
@@ -54,7 +58,9 @@ class ITMOAuth:
             or not 1 <= len(password) <= 1024
         ):
             raise LoginError("invalid_input")
-        row = await self.store.begin(hashlib.sha256(secret.encode()).hexdigest(), self.clock())
+        row = await self.store.begin(
+            hashlib.sha256(secret.encode()).hexdigest(), self.clock(), owner=owner
+        )
         try:
             refresh, account = await self.login.login(username.strip(), password)
             encrypted = self.cipher.encrypt(refresh.encode()).decode()

@@ -47,12 +47,14 @@ class AuthStore:
                 now + timedelta(minutes=10),
             )
 
-    async def begin(self, digest, now):
+    async def begin(self, digest, now, *, owner=None):
         row = await self.pool.fetchrow(
             "UPDATE itmo_login_tickets SET state='busy',attempts=attempts+1 "
-            "WHERE token_hash=$1 AND expires_at>$2 AND state='issued' AND attempts<3 RETURNING *",
+            "WHERE token_hash=$1 AND expires_at>$2 AND state='issued' AND attempts<3 "
+            "AND ($3::bigint IS NULL OR user_id=$3) RETURNING *",
             digest,
             now,
+            owner,
         )
         if not row:
             raise LoginError("expired_link")

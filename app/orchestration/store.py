@@ -264,6 +264,8 @@ class AssistantStore:
             "r.remind_at+interval '15 minutes',r.id,r.remind_at,r.version FROM agent_reminders r "
             "JOIN assistant_profiles p ON p.user_id=r.user_id WHERE r.remind_at<=$1 "
             "AND p.destination_chat_id IS NOT NULL AND r.completed_at IS NULL "
+            "AND NOT EXISTS (SELECT 1 FROM assistant_outbox o WHERE o.reminder_id=r.id "
+            "AND o.due_at=r.remind_at AND o.state='sent') "
             "ON CONFLICT(event_key) DO NOTHING",
             now,
         )
