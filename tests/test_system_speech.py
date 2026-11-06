@@ -4,7 +4,7 @@ from aiogram.methods import SendMessage
 from aiogram.types import InlineKeyboardMarkup, MessageEntity
 
 from app.handlers.assistant import START_TEXT
-from app.presentation import draft_button, main_keyboard
+from app.presentation import draft_button, main_keyboard, section_keyboard
 from app.system_speech import SystemSpeechMiddleware
 
 
@@ -26,6 +26,19 @@ async def test_start_menu_is_styled_only_for_owner_and_keeps_commands_and_callba
     plain = original.model_copy(update={"chat_id": 202})
     await middleware(sender, None, plain)
     assert sender.await_args.args[1] is plain
+    schedule = original.model_copy(
+        update={
+            "text": "📅 Ваше личное расписание",
+            "reply_markup": section_keyboard("schedule"),
+        }
+    )
+    await middleware(sender, None, schedule)
+    rows = sender.await_args.args[1].reply_markup.inline_keyboard
+    assert [row[0].text for row in rows] == [
+        "✏️ Добавить / изменить занятия",
+        "📅 Посмотреть расписание",
+        "← Таки назад",
+    ]
 
 
 async def test_system_heading_changes_without_altering_data_or_command_draft():

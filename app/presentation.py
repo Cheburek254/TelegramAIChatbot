@@ -90,8 +90,8 @@ def settings_keyboard(bot_username=None) -> InlineKeyboardMarkup:
 def section_keyboard(section, bot_username=None):
     sections = {
         "schedule": [
-            ("📥 Поставить", "schedule:put"),
-            ("📤 Достать", "schedule:get"),
+            ("✏️ Добавить / изменить занятия", "schedule:put"),
+            ("📅 Посмотреть расписание", "schedule:get"),
             ("← Назад", "menu"),
         ],
         "put": [

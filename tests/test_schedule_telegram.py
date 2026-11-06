@@ -69,6 +69,11 @@ async def test_schedule_menu_reads_only_clicking_owner():
     service.command.assert_not_called()
     sent = [call.args[1] for call in bot.session.call_args_list if len(call.args) > 1]
     menu = next(item for item in sent if isinstance(item, SendMessage))
+    assert [row[0].text for row in menu.reply_markup.inline_keyboard] == [
+        "✏️ Добавить / изменить занятия",
+        "📅 Посмотреть расписание",
+        "← Назад",
+    ]
     assert [row[0].callback_data for row in menu.reply_markup.inline_keyboard] == [
         "schedule:put",
         "schedule:get",

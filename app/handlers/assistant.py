@@ -340,7 +340,8 @@ def create_router(*, bot_username=None) -> Router:
             )
             await send_parts(
                 query.message,
-                f"✅ Аккаунт ИТМО {account} подключён. Расписание → Достать → Из ИТМО."
+                f"✅ Аккаунт ИТМО {account} подключён.\n"
+                "Расписание → Посмотреть расписание → Из ИТМО."
                 if account
                 else "Подключение ИТМО отменено.",
             )
