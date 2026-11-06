@@ -1,33 +1,14 @@
 """Ожидание входа и привязка только после подтверждения в Telegram."""
 
 import hashlib
-import json
-import os
 import secrets
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
 
-from cryptography.fernet import Fernet
-
+from app.db import job_owners, owner_scope
+from app.itmo import ITMOError
 from app.itmo_login import ITMOLogin, LoginError
-from scripts.itmo_connect import store_session
-
-
-def load_cipher(directory):
-    root = Path(directory)
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    path = root / ".auth-key"
-    if path.is_symlink():
-        raise ValueError("invalid_auth_key")
-    try:
-        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError:
-        pass
-    else:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(Fernet.generate_key())
-    return Fernet(path.read_bytes())
+from app.itmo_vault import load_cipher
 
 
 class ITMOAuth:
@@ -36,6 +17,20 @@ class ITMOAuth:
         self.clock = clock or (lambda: datetime.now(UTC))
         self.login = login or ITMOLogin()
         self.cipher = cipher or load_cipher(client.state_dir)
+
+    async def cleanup(self):
+        for owner in await job_owners(self.store.pool):
+            with owner_scope(owner):
+                await self.store.cleanup(self.clock())
+
+    async def propose_control(self, owner, value):
+        if value not in ("disconnect", "off") and (type(value) is not int or not 1 <= value <= 365):
+            raise ITMOError("invalid_itmo_policy")
+        return await self.store.propose_control(owner, value, self.clock())
+
+    async def apply_control(self, owner, identity, *, cancel=False):
+        async with self.store.control(owner, identity, self.clock()) as value:
+            return "cancelled" if cancel else await self.client.apply_control(owner, value)
 
     async def issue_ticket(self, owner):
         secret = secrets.token_urlsafe(32)
@@ -61,15 +56,16 @@ class ITMOAuth:
         row = await self.store.begin(
             hashlib.sha256(secret.encode()).hexdigest(), self.clock(), owner=owner
         )
-        try:
-            refresh, account = await self.login.login(username.strip(), password)
-            encrypted = self.cipher.encrypt(refresh.encode()).decode()
-            if not await self.store.finish(row["id"], encrypted, account, self.clock()):
-                raise LoginError("expired_link")
-            return account
-        except BaseException:
-            await self.store.failed(row["id"])
-            raise
+        with owner_scope(row.get("user_id", owner)):
+            try:
+                refresh, account = await self.login.login(username.strip(), password)
+                encrypted = self.cipher.encrypt(refresh.encode()).decode()
+                if not await self.store.finish(row["id"], encrypted, account, self.clock()):
+                    raise LoginError("expired_link")
+                return account
+            except BaseException:
+                await self.store.failed(row["id"])
+                raise
 
     async def status(self, owner, identity):
         return await self.store.status(owner, uuid.UUID(str(identity)), self.clock())
@@ -77,6 +73,7 @@ class ITMOAuth:
     async def confirm(self, owner, identity, *, cancel=False):
         identity = uuid.UUID(str(identity))
         async with self.store.pool.acquire() as conn, conn.transaction():
+            await self.store.lock_control(conn, owner)
             row = await conn.fetchrow(
                 "SELECT * FROM itmo_login_tickets WHERE user_id=$1 AND id=$2 FOR UPDATE",
                 owner,
@@ -98,13 +95,7 @@ class ITMOAuth:
                 directory = self.client.state_dir / str(owner)
                 if directory.is_dir() and not directory.is_symlink():
                     async with self.client.session_lock(owner):
-                        path = directory / "state.json"
-                        installed = (
-                            json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
-                        )
-                        if isinstance(installed, dict) and installed.get("loginTicket") == str(
-                            identity
-                        ):
+                        if self.client.installed(self.client.state(owner), identity):
                             await conn.execute(
                                 "UPDATE itmo_login_tickets SET state='completed',"
                                 "encrypted_token=NULL "
@@ -128,12 +119,14 @@ class ITMOAuth:
                 raise LoginError("invalid_state")
             directory.mkdir(parents=True, exist_ok=True, mode=0o700)
             async with self.client.session_lock(owner):
-                path = directory / "state.json"
-                existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-                if existing.get("loginTicket") != str(identity):
-                    store_session(
-                        self.client.state_dir, owner, refresh, replace=True, connection_id=identity
-                    )
+                try:
+                    await self.client.install(owner, refresh, identity)
+                except ITMOError as exc:
+                    raise LoginError(str(exc)) from None
+            await conn.execute(
+                "UPDATE itmo_session_actions SET consumed=true WHERE user_id=$1 AND NOT consumed",
+                owner,
+            )
             await conn.execute(
                 "UPDATE itmo_login_tickets SET state='completed',encrypted_token=NULL "
                 "WHERE user_id=$1 AND id=$2",

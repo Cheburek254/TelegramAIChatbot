@@ -104,15 +104,27 @@ class ScheduleService:
                     if last < today:
                         raise ITMOError("itmo_import_past")
                     first = max(first, today)
-                entries = await self.itmo.fetch(owner, first, last)
+                warning = None
                 if operation == "import":
+                    entries = await self.itmo.fetch(owner, first, last)
                     entries = future_itmo_lessons(entries, self.clock())
+                else:
+                    entries, warning = await self.itmo.display(owner, first, last)
+                    if entries is None:
+                        if not warning:
+                            raise ITMOError("itmo_not_connected")
+                        entries = [
+                            lesson_payload(row)
+                            for row in await self.store.entries(owner, first, last)
+                        ]
                 if not entries:
                     return ScheduleReply(
-                        "ИТМО не вернул будущих, ещё не начавшихся занятий на выбранные даты. "
-                        "Ничего не изменено."
-                        if operation == "import"
-                        else "ИТМО не вернул занятий на выбранные даты. Ничего не изменено."
+                        (warning + "\n\n" if warning else "")
+                        + (
+                            "ИТМО не вернул будущих, ещё не начавшихся занятий на выбранные даты."
+                            if operation == "import"
+                            else "На выбранные даты в расписании нет занятий."
+                        )
                     )
                 if operation == "import":
                     row = await self.store.prepare(
@@ -120,10 +132,14 @@ class ScheduleService:
                     )
                     return self.card(row)
                 return ScheduleReply(
-                    "🎓 Расписание my.itmo.ru · Europe/Moscow\n\n"
+                    (warning or "🎓 Расписание my.itmo.ru · Europe/Moscow")
+                    + "\n\n"
                     + "\n\n".join(describe(entry) for entry in entries)
-                    + "\n\nСохранить в своё: /schedule import "
-                    + " ".join(bounds)
+                    + (
+                        ""
+                        if warning
+                        else "\n\nСохранить в своё: /schedule import " + " ".join(bounds)
+                    )
                 )
             if operation == "repeat":
                 timing, title, location = tokens[1].split("|")

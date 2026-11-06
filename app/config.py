@@ -39,6 +39,8 @@ class Settings:
     mcp_enabled: bool = True
     mcp_resource_timezone: str = "Europe/Moscow"
     itmo_state_dir: str = "/run/itmo"
+    itmo_vault_key_file: str = ""
+    postgres_rls: bool = False
     itmo_auth_public_url: str = ""
     itmo_auth_port: int = 8081
     supervisor_enabled: bool = True
@@ -142,6 +144,7 @@ class Settings:
             postgres_port=port("POSTGRES_PORT", "5432"),
             postgres_db=value("POSTGRES_DB", "bot"),
             postgres_user=value("POSTGRES_USER", "bot"),
+            postgres_rls=value("POSTGRES_RLS", "0") == "1",
             log_level=level,
             health_port=port("HEALTH_PORT", "8080"),
             openrouter_api_key=value("OPENROUTER_API_KEY", value("OPENROUTER_APIKEY")),
@@ -158,6 +161,7 @@ class Settings:
             mcp_enabled=value("MCP_ENABLED", "1") == "1",
             mcp_resource_timezone=value("MCP_RESOURCE_TIMEZONE", "Europe/Moscow"),
             itmo_state_dir=value("ITMO_STATE_DIR", cls.itmo_state_dir),
+            itmo_vault_key_file=value("ITMO_VAULT_KEY_FILE"),
             itmo_auth_public_url=value("ITMO_AUTH_PUBLIC_URL").rstrip("/"),
             itmo_auth_port=port("ITMO_AUTH_PORT", "8081"),
             supervisor_enabled=value("SUPERVISOR_ENABLED", "1") == "1",

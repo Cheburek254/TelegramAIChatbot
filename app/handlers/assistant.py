@@ -322,11 +322,110 @@ def create_router(*, bot_username=None, miniapp_url=None) -> Router:
             await send_parts(message, "Слишком много попыток входа. Повторите через 10 минут.")
 
     @router.message(Command("itmo"))
-    async def itmo_command(message: Message, itmo_auth: ITMOAuth | None = None):
+    async def itmo_command(
+        message: Message, command: CommandObject, itmo_auth: ITMOAuth | None = None
+    ):
         try:
-            await issue_login(message, message.from_user.id, itmo_auth)
+            if itmo_auth is None:
+                await issue_login(message, message.from_user.id, None)
+                return
+            argument = (command.args or "").strip().lower()
+            if not argument:
+                await show_itmo(message, message.from_user.id, itmo_auth.client)
+            elif argument == "connect":
+                await issue_login(message, message.from_user.id, itmo_auth)
+            else:
+                value = (
+                    int(argument)
+                    if argument.isascii() and argument.isdecimal() and len(argument) <= 3
+                    else argument
+                )
+                await propose_itmo(message, message.from_user.id, itmo_auth, value)
+        except ValueError:
+            await send_parts(message, "Укажите /itmo 1–365, /itmo off или /itmo disconnect.")
         except (asyncpg.PostgresError, OSError, TimeoutError):
             await send_parts(message, STORAGE_ERROR)
+
+    async def show_itmo(message, owner, client):
+        from app.itmo_vault import NO_EXPIRY_WARNING
+
+        status = client.status(owner)
+        labels = {
+            "active": "Подключён",
+            "disconnected": "Отключён",
+            "never": "Аккаунт не подключён",
+            "expired": "Срок подключения истёк",
+            "revoking": "Отзыв ожидает ответа ИТМО",
+            "unavailable": "Состояние недоступно",
+        }
+        days = status["days"]
+        interval = (
+            f"Через {days} дн. после входа."
+            if days is not None
+            else "Выключено.\n\n⚠️ " + NO_EXPIRY_WARNING
+        )
+        options = [
+            [InlineKeyboardButton(text="🔐 Войти в ИТМО", callback_data="itmo:connect")],
+            [
+                InlineKeyboardButton(text=f"{days} дн.", callback_data=f"itmo:policy:{days}")
+                for days in (7, 30, 90)
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Выключить автоотключение", callback_data="itmo:policy:off"
+                )
+            ],
+        ]
+        if status["status"] in {"active", "expired", "revoking"}:
+            options.insert(
+                1,
+                [
+                    InlineKeyboardButton(
+                        text="Отключить ИТМО", callback_data="itmo:policy:disconnect"
+                    )
+                ],
+            )
+        await message.answer(
+            f"🎓 ИТМО · {labels[status['status']]}\n\n"
+            f"Автоотключение. {interval}\n\nДругой срок: /itmo 14",
+            parse_mode=None,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=options),
+        )
+
+    async def propose_itmo(message, owner, itmo_auth, value):
+        from app.itmo_vault import change_prompt
+        from app.presentation import confirmation_keyboard
+
+        identity = await itmo_auth.propose_control(owner, value)
+        await message.answer(
+            change_prompt(value),
+            parse_mode=None,
+            reply_markup=confirmation_keyboard(identity, prefix="itmoctl"),
+        )
+
+    @router.callback_query(F.data.startswith("itmoctl:"))
+    async def confirm_itmo_control(query: CallbackQuery, itmo_auth: ITMOAuth | None = None):
+        from app.itmo_vault import CHANGE_RESULTS
+
+        await query.answer()
+        if (
+            not itmo_auth
+            or not isinstance(query.message, Message)
+            or query.message.chat.id != query.from_user.id
+        ):
+            return
+        try:
+            _, operation, identity = query.data.split(":", 2)
+            if operation not in {"confirm", "cancel"}:
+                return
+            result = await itmo_auth.apply_control(
+                query.from_user.id, identity, cancel=operation == "cancel"
+            )
+            await send_parts(query.message, CHANGE_RESULTS[result])
+        except ValueError:
+            await send_parts(query.message, "Подтверждение устарело. Откройте /itmo и повторите.")
+        except (OSError, TimeoutError):
+            await send_parts(query.message, STORAGE_ERROR)
 
     @router.callback_query(F.data.startswith("itmo:"))
     async def itmo_button(query: CallbackQuery, itmo_auth: ITMOAuth | None = None):
@@ -339,7 +438,14 @@ def create_router(*, bot_username=None, miniapp_url=None) -> Router:
                 return
             if itmo_auth is None:
                 return
+            if query.data == "itmo:manage":
+                await show_itmo(query.message, query.from_user.id, itmo_auth.client)
+                return
             _, operation, identity = query.data.split(":", 2)
+            if operation == "policy":
+                value = int(identity) if identity.isdecimal() else identity
+                await propose_itmo(query.message, query.from_user.id, itmo_auth, value)
+                return
             if operation == "status":
                 row = await itmo_auth.status(query.from_user.id, identity)
                 if row["state"] == "verified":
@@ -374,7 +480,11 @@ def create_router(*, bot_username=None, miniapp_url=None) -> Router:
                 await query.message.edit_reply_markup(reply_markup=None)
             except Exception:
                 pass
-        except (LoginError, ValueError):
+        except LoginError as exc:
+            from app.itmo_auth_web_messages import login_message
+
+            await send_parts(query.message, login_message(str(exc)))
+        except ValueError:
             await send_parts(
                 query.message,
                 "Ссылка или подтверждение недействительно. Создайте новую ссылку: /itmo.",

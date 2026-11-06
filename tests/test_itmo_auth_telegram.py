@@ -56,7 +56,7 @@ async def test_login_link_is_in_button_only_and_foreign_chat_cannot_use_callback
         date=datetime.now(UTC),
         chat=Chat(id=42, type="private"),
         from_user=User(id=42, is_bot=False, first_name="Тест"),
-        text="/itmo",
+        text="/itmo connect",
     )
     await dispatcher.feed_update(bot, Update(update_id=1, message=message), itmo_auth=auth)
     auth.issue.assert_awaited_once_with(42)

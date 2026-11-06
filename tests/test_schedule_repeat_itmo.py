@@ -155,7 +155,10 @@ async def test_itmo_session_is_owner_scoped_and_results_are_normalized(tmp_path)
             "location": "Место не указано ИТМО",
         }
     ]
-    client._exchange.assert_awaited_once_with(directory, date(2026, 11, 2), date(2026, 11, 8))
+    runtime, first, last = client._exchange.await_args.args
+    assert runtime != directory and not runtime.exists()
+    assert (first, last) == (date(2026, 11, 2), date(2026, 11, 8))
+    assert (directory / "state.enc").exists() and not (directory / "state.json").exists()
     client._exchange.return_value = {"range": {"from": "2026-11-01", "to": "2026-11-08"}}
     with pytest.raises(ITMOError, match="itmo_invalid_response"):
         await client.fetch(42, date(2026, 11, 2), date(2026, 11, 8))
@@ -185,18 +188,18 @@ async def test_real_itmo_mcp_interop_is_read_only_and_denies_without_account(tmp
         await client._exchange(tmp_path, date(2026, 11, 2), date(2026, 11, 8))
 
 
-def test_connection_helper_writes_private_refresh_state_without_overwriting(tmp_path):
-    import json
+async def test_connection_helper_writes_private_refresh_state_without_overwriting(tmp_path):
     import os
 
-    from scripts.itmo_connect import store_session
-
     token = "synthetic-refresh-token-for-test-only"
-    store_session(tmp_path, 42, token)
-    target = tmp_path / "42" / "state.json"
-    assert json.loads(target.read_text()) == {"refreshToken": token}
+    client = ITMOClient(tmp_path)
+    async with client.session_lock(42):
+        await client.install(42, token, "one", replace=False, bot_issued=False)
+    target = tmp_path / "42" / "state.enc"
+    assert token.encode() not in target.read_bytes()
     if os.name == "posix":
         assert target.stat().st_mode & 0o777 == 0o600
-    with pytest.raises(ValueError, match="already_connected"):
-        store_session(tmp_path, 42, "other-synthetic-refresh-token")
-    assert json.loads(target.read_text()) == {"refreshToken": token}
+    async with client.session_lock(42):
+        with pytest.raises(ValueError, match="already_connected"):
+            await client.install(42, "other-synthetic-refresh-token", "two", replace=False)
+    assert client.vault.load(42)["sdk"]["refreshToken"] == token

@@ -210,11 +210,30 @@ function connectItmo() {
   }, "Войти");
 }
 
+async function prepareItmo(value) {
+  try {
+    const change = await api({action: "itmo_prepare", value});
+    review(change.message, () => api({action: "itmo_apply", pending: change.pending}));
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+function itmoPolicy(data) {
+  editForm("Автоотключение ИТМО", [
+    element("p", "Срок отсчитывается с последнего подключения аккаунта.", "meta"),
+    field("mode", "Автоотключение", "select", data.itmo_days === null ? "off" : "on",
+      [["on", "Включено"], ["off", "Выключено"]]),
+    field("days", "Дней после входа", "number", data.itmo_days ?? 30,
+      {required: true, min: 1, max: 365}),
+  ], values => prepareItmo(values.mode === "off" ? "off" : Number(values.days)));
+}
+
 function renderToolbar(data) {
   toolbar.replaceChildren();
   if (view === "schedule") {
-    const isItmo = data.connected && !personal;
-    if (data.connected) {
+    const isItmo = data.itmo_view;
+    if (data.itmo_status !== "never") {
       for (const [label, value] of [["ИТМО", false], ["Личное", true]]) {
         const choice = button(label, () => { personal = value; load(); });
         choice.setAttribute("aria-pressed", String(personal === value));
@@ -227,7 +246,13 @@ function renderToolbar(data) {
     next.disabled = week === 364;
     toolbar.append(previous, next);
     if (!isItmo) toolbar.append(button("+ Занятие", () => lessonForm(null, data.first), "primary"));
-    toolbar.append(button(data.connected ? "Переподключить ИТМО" : "Подключить ИТМО", connectItmo));
+    if (data.itmo_enabled) {
+      toolbar.append(button(data.connected ? "Переподключить ИТМО" : "Подключить ИТМО", connectItmo));
+      if (["active", "expired", "revoking"].includes(data.itmo_status)) {
+        toolbar.append(button("Отключить ИТМО", () => prepareItmo("disconnect")));
+      }
+      toolbar.append(button("Автоотключение ИТМО", () => itmoPolicy(data)));
+    }
   } else if (view === "tasks") {
     toolbar.append(button("+ Задача", () => recordForm("t"), "primary"));
   } else if (view === "reminders") {
@@ -360,7 +385,8 @@ async function load(offset = 0, notice = "") {
       completed.append(element("h3", "Недавно выполнено", "day"));
       completed.append(...data.completed.map(entry => renderRecord(entry, true)));
     }
-    status.textContent = notice || data.warning || (items.childElementCount ? "" : empty[view]);
+    status.textContent = [notice, data.warning, data.itmo_security_warning && "⚠️ " + data.itmo_security_warning]
+      .filter(Boolean).join(" ") || (items.childElementCount ? "" : empty[view]);
     if (notice) status.classList.add("status-ok");
     nextOffset = data.next_offset;
     more.hidden = !data.more;

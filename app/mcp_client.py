@@ -63,6 +63,8 @@ class MCPBridge:
                 "PYTHONIOENCODING": "utf-8",
                 "PYTHONUNBUFFERED": "1",
                 "ITMO_STATE_DIR": str(self.settings.itmo_state_dir),
+                "ITMO_VAULT_KEY_FILE": self.settings.itmo_vault_key_file,
+                "POSTGRES_RLS": "1" if self.settings.postgres_rls else "0",
             }
         )
         for key in ("SYSTEMROOT", "TEMP", "TMP", "PATH"):

@@ -16,6 +16,7 @@ from mcp.shared.exceptions import McpError
 from pydantic import AnyUrl, ValidationError
 
 from app.agent_store import ActionError, AgentStore
+from app.db import ScopedPool, owner_scope
 from app.itmo import ITMOClient, ITMOError
 from app.mcp_service.auth import verify
 from app.mcp_service.contracts import DESCRIPTIONS, INPUTS, OUTPUTS
@@ -83,11 +84,12 @@ def create_server(
         if str(uri) == "materials://catalog":
             meta = server.request_context.meta
             owner = verify(secret, meta.model_dump())[0] if meta else None
-            catalog = (
-                await materials_handler(owner, None, 5)
-                if owner is not None and materials_handler
-                else materials.catalog()
-            )
+            with owner_scope(owner):
+                catalog = (
+                    await materials_handler(owner, None, 5)
+                    if owner is not None and materials_handler
+                    else materials.catalog()
+                )
             from app.material_contracts import Catalog
 
             return [
@@ -101,7 +103,8 @@ def create_server(
         meta = server.request_context.meta
         owner, _ = verify(secret, meta.model_dump() if meta else {})
         try:
-            data = (await schedule.week(owner, clock(), timezone)).model_dump_json()
+            with owner_scope(owner):
+                data = (await schedule.week(owner, clock(), timezone)).model_dump_json()
         except ITMOError as exc:
             raise McpError(types.ErrorData(code=-32000, message=str(exc))) from None
         return [ReadResourceContents(content=data, mime_type="application/json")]
@@ -116,31 +119,36 @@ def create_server(
                 meta = server.request_context.meta
                 if meta and city_handler:
                     owner, _ = verify(secret, meta.model_dump())
-                    result = await city_handler(owner, payload["city"], weather)
+                    with owner_scope(owner):
+                        result = await city_handler(owner, payload["city"], weather)
                 else:
                     result = await weather.current(payload["city"])
             elif name == "search_materials":
                 meta = server.request_context.meta
                 owner = verify(secret, meta.model_dump())[0] if meta else None
-                result = (
-                    await materials_handler(owner, payload["query"], payload["limit"])
-                    if owner is not None and materials_handler
-                    else materials.search(**payload)
-                )
+                with owner_scope(owner):
+                    result = (
+                        await materials_handler(owner, payload["query"], payload["limit"])
+                        if owner is not None and materials_handler
+                        else materials.search(**payload)
+                    )
             elif name == "get_schedule":
                 meta = server.request_context.meta
                 owner, _ = verify(secret, meta.model_dump() if meta else {})
-                result = await schedule.day(owner, payload["date"])
+                with owner_scope(owner):
+                    result = await schedule.day(owner, payload["date"])
             elif name == "get_tasks":
                 meta = server.request_context.meta
                 owner, _ = verify(secret, meta.model_dump() if meta else {})
                 if tasks_handler is None:
                     raise ToolFailure("tool_unavailable")
-                result = await tasks_handler(owner, payload["scope"], clock(), timezone)
+                with owner_scope(owner):
+                    result = await tasks_handler(owner, payload["scope"], clock(), timezone)
             else:
                 meta = server.request_context.meta
                 owner, action = verify(secret, meta.model_dump() if meta else {})
-                result = await reminder_handler(owner, action, payload, clock())
+                with owner_scope(owner):
+                    result = await reminder_handler(owner, action, payload, clock())
             output = (
                 OUTPUTS[name]
                 .model_validate(result.model_dump() if hasattr(result, "model_dump") else result)
@@ -184,6 +192,8 @@ async def main():
                 timeout=5,
                 command_timeout=10,
             )
+            if os.getenv("POSTGRES_RLS") == "1":
+                pool = ScopedPool(pool)
         return pool
 
     async def reminder(owner, action, payload, now):
@@ -224,7 +234,10 @@ async def main():
         async with aiohttp.ClientSession(trust_env=False) as session:
             server = create_server(
                 ScheduleSource(
-                    PersonalSchedule(), ITMOClient(os.getenv("ITMO_STATE_DIR", "/run/itmo"))
+                    PersonalSchedule(),
+                    ITMOClient(
+                        os.getenv("ITMO_STATE_DIR", "/run/itmo"), os.getenv("ITMO_VAULT_KEY_FILE")
+                    ),
                 ),
                 Weather(session),
                 reminder,

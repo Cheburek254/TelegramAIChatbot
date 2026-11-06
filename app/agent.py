@@ -383,6 +383,11 @@ class Agent:
                             temperature=profile.temperature,
                         )
                         content = spoken.content
+                        warnings = {
+                            day.source for day in schedules if day.source.startswith("Данные ИТМО")
+                        }
+                        if warnings:
+                            content = "\n".join(sorted(warnings)) + "\n\n" + content
                         if result.truncated:
                             content += "\n\nОтвет прерван лимитом генерации. Попросите продолжить."
                         reply = AgentReply(content)

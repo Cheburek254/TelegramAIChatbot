@@ -4,6 +4,7 @@ import asyncio
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 
+from app.db import job_owners, owner_scope
 from app.itmo import ITMOError
 from app.timezones import zone
 
@@ -62,6 +63,13 @@ class ItmoWatch:
         self.clock = clock or (lambda: datetime.now(UTC))
 
     async def tick(self):
+        claimed = False
+        for owner in await job_owners(getattr(self.store, "pool", None)):
+            with owner_scope(owner):
+                claimed = await self.tick_owner() or claimed
+        return claimed
+
+    async def tick_owner(self):
         now = self.clock()
         claim = await self.store.claim(now)
         if claim is None:

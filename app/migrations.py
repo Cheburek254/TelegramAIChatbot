@@ -74,6 +74,14 @@ CREATE TABLE IF NOT EXISTS itmo_login_tickets (
     account TEXT
 );
 CREATE INDEX IF NOT EXISTS itmo_login_owner_created ON itmo_login_tickets(user_id,created_at);
+CREATE TABLE IF NOT EXISTS itmo_session_actions (
+    id UUID PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    value TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    consumed BOOLEAN NOT NULL DEFAULT false
+);
+CREATE INDEX IF NOT EXISTS itmo_session_action_owner ON itmo_session_actions(user_id);
 CREATE TABLE IF NOT EXISTS personal_schedule_lessons (
     id BIGSERIAL PRIMARY KEY,
     user_id BIGINT NOT NULL,

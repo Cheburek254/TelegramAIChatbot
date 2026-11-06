@@ -59,7 +59,7 @@ async def test_free_telegram_routes_to_itmo_or_asks_duration(text, last):
         zone_for=AsyncMock(return_value="Europe/Moscow"),
         store=Mock(proposal=AsyncMock(return_value="synthetic-id")),
     )
-    itmo = Mock(connected=lambda owner: True, fetch=AsyncMock(return_value=[]))
+    itmo = Mock(display=AsyncMock(return_value=([], None)))
     llm = Mock()
     study = StudyPlanning(planner, None, itmo, llm, 6000)
     dispatcher = Dispatcher()
@@ -84,10 +84,10 @@ async def test_free_telegram_routes_to_itmo_or_asks_duration(text, last):
     llm.complete.assert_not_called()
     answer = bot.session.call_args.args[1].text
     if last is None:
-        itmo.fetch.assert_not_called()
+        itmo.display.assert_not_called()
         assert "Сколько минут" in answer
     else:
-        itmo.fetch.assert_awaited_once_with(123, now.date(), now.date().replace(day=last))
+        itmo.display.assert_awaited_once_with(123, now.date(), now.date().replace(day=last))
         assert f"До {last:02d}.11.2026 23:59" in answer
 
 

@@ -102,7 +102,7 @@ def section_keyboard(section, bot_username=None):
             ("← Назад", "schedule:menu"),
         ],
         "get": [
-            ("🔐 Подключить ИТМО", "itmo:connect"),
+            ("🎓 Аккаунт ИТМО", "itmo:manage"),
             ("Сегодня", "schedule:today"),
             ("Эта неделя", "schedule:week"),
             ("📆 Выбрать дату", "/schedule "),

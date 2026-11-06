@@ -33,7 +33,14 @@ def signed(owner, date=NOW):
 
 async def test_miniapp_only_reads_for_verified_owner_and_serves_private_routes():
     schedule = Mock(
-        itmo=Mock(connected=lambda owner: owner == 101, fetch=AsyncMock(return_value=[])),
+        itmo=Mock(
+            status=lambda owner: {
+                "connected": owner == 101,
+                "status": "active" if owner == 101 else "never",
+                "days": 30,
+            },
+            display=AsyncMock(side_effect=lambda owner, *_: ([] if owner == 101 else None, None)),
+        ),
         agent_store=Mock(timezone=AsyncMock(return_value=None)),
         store=Mock(entries=AsyncMock(return_value=[])),
         default_timezone="Europe/Moscow",
@@ -99,7 +106,7 @@ async def test_miniapp_only_reads_for_verified_owner_and_serves_private_routes()
         planner.active.assert_awaited_once_with(101, "t", 0)
         official = await request(original, "schedule")
         assert "ИТМО" in (await official.json())["source"]
-        schedule.itmo.fetch.assert_awaited_once_with(
+        schedule.itmo.display.assert_awaited_once_with(
             101, NOW.date(), NOW.date() + timedelta(days=6)
         )
         local = await request(signed(102), "schedule")
@@ -121,6 +128,8 @@ async def test_miniapp_itmo_login_and_weather_use_signed_owner():
         issue_ticket=AsyncMock(return_value=(ticket_id, "synthetic-ticket")),
         sign_in=AsyncMock(return_value="fixture-account"),
         confirm=AsyncMock(),
+        propose_control=AsyncMock(return_value="synthetic-confirmation"),
+        apply_control=AsyncMock(return_value="saved"),
     )
     profiles = Mock(profile=AsyncMock(return_value={"city": None}))
     geography = Mock(current=AsyncMock(return_value=Mock(model_dump=lambda **_: {"status": "ok"})))
@@ -160,6 +169,13 @@ async def test_miniapp_itmo_login_and_weather_use_signed_owner():
         auth.confirm.assert_not_called()
         assert (await request(user, action="itmo_confirm", id=str(ticket_id))).status == 200
         auth.confirm.assert_awaited_once_with(101, ticket_id)
+        confirmation = await request(user, action="itmo_prepare", value="off")
+        assert "украденный токен" in (await confirmation.json())["message"]
+        auth.propose_control.assert_awaited_once_with(101, "off")
+        auth.apply_control.assert_not_called()
+        result = await request(user, action="itmo_apply", pending="synthetic-confirmation")
+        assert result.status == 200
+        auth.apply_control.assert_awaited_once_with(101, "synthetic-confirmation")
         weather = await request(user, view="weather", offset=0)
         assert (await weather.json())["default_city"] is True
         assert geography.current.await_args.args[0]["name"] == "Санкт-Петербург"

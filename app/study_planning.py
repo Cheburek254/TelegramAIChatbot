@@ -133,19 +133,20 @@ class StudyPlanning:
         first = now + timedelta(minutes=5)
         if until <= first:
             return "До дедлайна уже не осталось времени на подходящее окно.", []
-        connected = self.itmo.connected(owner)
-        lesson_zone = "Europe/Moscow" if connected else timezone
-        source_tz = zone(lesson_zone)
+        source_tz = zone("Europe/Moscow")
         start_day, last_day = first.astimezone(source_tz).date(), until.astimezone(source_tz).date()
-        if connected:
-            entries = await self.itmo.fetch(owner, start_day, last_day)
-            source = "Актуальное расписание ИТМО"
+        entries, warning = await self.itmo.display(owner, start_day, last_day)
+        if entries is not None:
+            lesson_zone = "Europe/Moscow"
+            source = warning or "Актуальное расписание ИТМО"
         else:
+            lesson_zone = timezone
+            start_day, last_day = first.astimezone(tz).date(), until.astimezone(tz).date()
             entries = [
                 lesson_payload(row)
                 for row in await self.schedule.entries(owner, start_day, last_day)
             ]
-            source = SOURCE
+            source = warning or SOURCE
         rows = [f"🔎 Свободные окна · {timezone}\nДо {until.astimezone(tz):%d.%m.%Y %H:%M}", source]
         buttons = []
         for index, (start, end) in enumerate(

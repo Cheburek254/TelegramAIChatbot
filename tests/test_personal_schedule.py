@@ -139,6 +139,6 @@ async def test_past_import_rejected_before_api_and_empty_future_not_prepared(ser
 
 
 async def test_itmo_view_can_still_request_explicit_history(service):
-    service.itmo = Mock(fetch=AsyncMock(return_value=[]))
+    service.itmo = Mock(display=AsyncMock(return_value=([], None)))
     await service.command(42, "itmo 2026-10-26 2026-11-01", "view")
-    service.itmo.fetch.assert_awaited_once_with(42, date(2026, 10, 26), date(2026, 11, 1))
+    service.itmo.display.assert_awaited_once_with(42, date(2026, 10, 26), date(2026, 11, 1))

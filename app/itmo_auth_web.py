@@ -124,7 +124,7 @@ def create_auth_app(service, *, miniapp=None):
     async def reap():
         while True:
             try:
-                await service.store.cleanup(service.clock())
+                await service.cleanup()
             except Exception:
                 pass
             await asyncio.sleep(60)

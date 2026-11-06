@@ -11,7 +11,7 @@ from app.agent import Agent
 from app.agent_store import AgentStore
 from app.assistant import Assistant
 from app.config import ConfigError, Settings
-from app.db import create_pool
+from app.db import OwnerMiddleware, create_pool
 from app.handlers.assistant import create_router
 from app.handlers.features import ContactMiddleware, create_feature_router
 from app.handlers.itmo_watch import create_itmo_watch_router
@@ -62,6 +62,7 @@ async def run(settings: Settings) -> None:
     scheduler_task = None
     scheduler = None
     notifications = None
+    itmo_task = None
     miniapp_url = None
     try:
         state.pool = await create_pool(settings)
@@ -76,15 +77,19 @@ async def run(settings: Settings) -> None:
                 "или используйте отдельного учебного бота."
             )
         logger.info("Telegram доступен. Бот @%s запускает polling.", me.username)
-        await migrate(state.pool)
+        if not settings.postgres_rls:
+            await migrate(state.pool)
         style_store = SpeechStyleStore(state.pool)
         bot.session.middleware(SystemSpeechMiddleware(style_store))
         llm_session = aiohttp.ClientSession(trust_env=False)
+        itmo = ITMOClient(settings.itmo_state_dir, settings.itmo_vault_key_file)
+        await itmo.migrate_legacy()
+        itmo_task = asyncio.create_task(itmo.maintenance())
         schedule_service = ScheduleService(
             ScheduleStore(state.pool),
             AgentStore(state.pool),
             timezone=settings.mcp_resource_timezone,
-            itmo=ITMOClient(settings.itmo_state_dir),
+            itmo=itmo,
         )
         store = AssistantStore(state.pool)
         planner_store = PlannerStore(state.pool)
@@ -185,6 +190,8 @@ async def run(settings: Settings) -> None:
             except Exception:
                 logger.warning("Не удалось установить кнопку Mini App.")
         dispatcher = Dispatcher()
+        dispatcher.message.outer_middleware(OwnerMiddleware())
+        dispatcher.callback_query.outer_middleware(OwnerMiddleware())
         if notifications:
             dispatcher.message.outer_middleware(ContactMiddleware(store))
             dispatcher.callback_query.outer_middleware(ContactMiddleware(store))
@@ -233,6 +240,9 @@ async def run(settings: Settings) -> None:
         await state.polling_task
     finally:
         state.initialized = False
+        if itmo_task:
+            itmo_task.cancel()
+            await asyncio.gather(itmo_task, return_exceptions=True)
         if scheduler_task:
             scheduler_task.cancel()
             await asyncio.gather(scheduler_task, return_exceptions=True)

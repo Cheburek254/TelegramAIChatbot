@@ -12,9 +12,11 @@ from urllib.parse import parse_qsl
 
 from aiohttp import web
 
+from app.db import owner_scope
 from app.itmo import ITMOError
 from app.itmo_auth_web_messages import login_message
 from app.itmo_login import LoginError
+from app.itmo_vault import CHANGE_RESULTS, NO_EXPIRY_WARNING, change_prompt
 from app.mcp_service.weather import ToolFailure
 from app.miniapp_changes import FormError, MiniAppChanges
 from app.planner_store import PAGE_SIZE
@@ -113,6 +115,10 @@ class MiniApp:
             owner = telegram_owner(data["init_data"], self.secret, now)
         except (ValueError, RecursionError):
             raise web.HTTPUnauthorized() from None
+        with owner_scope(owner):
+            return await self.owner_api(owner, data, now)
+
+    async def owner_api(self, owner, data, now):
         if "action" in data:
             return await self.action(owner, data, now)
         if set(data) != {"init_data", "view", "offset"}:
@@ -168,10 +174,26 @@ class MiniApp:
                 if action == "itmo_confirm" and fields == {"id"}:
                     await self.itmo_auth.confirm(owner, uuid.UUID(data["id"]))
                     return web.json_response({"message": "Аккаунт ИТМО подключён."})
+                if action == "itmo_prepare" and fields == {"value"}:
+                    value = data["value"]
+                    pending = await self.itmo_auth.propose_control(owner, value)
+                    return web.json_response({"pending": pending, "message": change_prompt(value)})
+                if action == "itmo_apply" and fields == {"pending"}:
+                    result = await self.itmo_auth.apply_control(owner, data["pending"])
+                    return web.json_response({"message": CHANGE_RESULTS[result]})
         except FormError as exc:
             return web.json_response({"message": str(exc)}, status=400)
         except LoginError as exc:
             return web.json_response({"message": login_message(str(exc))}, status=400)
+        except ITMOError as exc:
+            return web.json_response(
+                {
+                    "message": "Укажите срок от 1 до 365 дней."
+                    if str(exc) == "invalid_itmo_policy"
+                    else "Подтверждение устарело. Повторите действие."
+                },
+                status=409,
+            )
         except TimeoutError:
             return web.json_response({"message": "ИТМО не ответил. Повторите попытку."}, status=503)
         except (AttributeError, TypeError, ValueError):
@@ -180,29 +202,39 @@ class MiniApp:
 
     async def lessons(self, owner, now, offset=0, *, personal=False):
         itmo = self.schedule.itmo
-        connected = bool(itmo and itmo.connected(owner))
+        state = (
+            itmo.status(owner) if itmo else {"connected": False, "status": "never", "days": None}
+        )
+        controls = {
+            "connected": state["connected"],
+            "itmo_status": state["status"],
+            "itmo_days": state["days"],
+            "itmo_enabled": bool(self.itmo_auth),
+            "itmo_security_warning": NO_EXPIRY_WARNING if itmo and state["days"] is None else None,
+        }
         warning = None
-        if connected and not personal:
+        if itmo and not personal:
             timezone = "Europe/Moscow"
             first = now.astimezone(zone(timezone)).date() + timedelta(days=offset)
-            try:
-                async with asyncio.timeout(15):
-                    entries = await itmo.fetch(owner, first, first + timedelta(days=6))
-            except (ITMOError, OSError, TimeoutError):
-                warning = "ИТМО сейчас недоступен. Показано сохранённое личное расписание."
-            else:
+            entries, warning = await itmo.display(owner, first, first + timedelta(days=6))
+            if entries is not None:
                 return {
+                    **controls,
                     "items": sorted(entries, key=lambda item: (item["date"], item["start"])),
-                    "source": "Актуальное расписание ИТМО",
+                    "source": "Сохранённое расписание ИТМО"
+                    if warning
+                    else "Актуальное расписание ИТМО",
                     "timezone": timezone,
+                    "warning": warning,
                     "more": False,
                     "first": first.isoformat(),
-                    "connected": connected,
+                    "itmo_view": True,
                 }
         timezone = await self.schedule.agent_store.timezone(owner) or self.schedule.default_timezone
         first = now.astimezone(zone(timezone)).date() + timedelta(days=offset)
         rows = await self.schedule.store.entries(owner, first, first + timedelta(days=6))
         return {
+            **controls,
             "items": [
                 {**lesson_payload(row), "id": str(row["id"]), "version": row["version"]}
                 for row in rows
@@ -212,7 +244,7 @@ class MiniApp:
             "warning": warning,
             "more": False,
             "first": first.isoformat(),
-            "connected": connected,
+            "itmo_view": False,
         }
 
     @staticmethod

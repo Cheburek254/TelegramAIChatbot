@@ -1,5 +1,4 @@
 import asyncio
-import json
 import os
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, Mock
@@ -57,15 +56,17 @@ async def test_itmo_login_owner_confirmation_encryption_replays_expiry_and_rate(
             restarted.confirm(101, identity), restarted.confirm(101, identity)
         )
         assert first == second == "111111"
-        path = tmp_path / "101" / "state.json"
-        value = json.loads(path.read_text())
-        assert value == {"refreshToken": refresh, "loginTicket": str(identity)}
+        path = tmp_path / "101" / "state.enc"
+        value = client.vault.load(101)
+        assert value["sdk"] == {"refreshToken": refresh}
+        assert value["login"] == str(identity)
+        assert refresh.encode() not in path.read_bytes()
         assert (await auth.status(101, identity))["encrypted_token"] is None
         # Completed callbacks must not overwrite a rotated token.
-        value["refreshToken"] = "synthetic-rotated-refresh"
-        path.write_text(json.dumps(value))
+        value["sdk"]["refreshToken"] = "synthetic-rotated-refresh"
+        client.vault.save(101, value)
         await auth.confirm(101, identity)
-        assert json.loads(path.read_text())["refreshToken"] == "synthetic-rotated-refresh"
+        assert client.vault.load(101)["sdk"]["refreshToken"] == "synthetic-rotated-refresh"
         # Simulate file installation followed by a failed DB commit.
         await pool.execute(
             "UPDATE itmo_login_tickets SET state='verified',encrypted_token=$2 WHERE id=$1",
@@ -73,7 +74,7 @@ async def test_itmo_login_owner_confirmation_encryption_replays_expiry_and_rate(
             auth.cipher.encrypt(refresh.encode()).decode(),
         )
         assert await auth.confirm(101, identity, cancel=True) == "111111"
-        assert json.loads(path.read_text())["refreshToken"] == "synthetic-rotated-refresh"
+        assert client.vault.load(101)["sdk"]["refreshToken"] == "synthetic-rotated-refresh"
         cancelled, url = await auth.issue(303)
         await auth.sign_in(urlsplit(url).fragment, "303", "synthetic-password")
         assert await auth.confirm(303, cancelled, cancel=True) is None

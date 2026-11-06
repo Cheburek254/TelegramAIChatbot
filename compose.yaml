@@ -29,8 +29,9 @@ services:
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
       POSTGRES_DB: ${POSTGRES_DB:-bot}
-      POSTGRES_USER: ${POSTGRES_USER:-bot}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Задайте POSTGRES_PASSWORD}
+      POSTGRES_USER: ${BOT_DB_USER:-${POSTGRES_USER:-bot}}
+      POSTGRES_PASSWORD: ${BOT_DB_PASSWORD:-${POSTGRES_PASSWORD:?Задайте POSTGRES_PASSWORD}}
+      POSTGRES_RLS: ${POSTGRES_RLS:-0}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       HEALTH_PORT: ${HEALTH_PORT:-8080}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-${OPENROUTER_APIKEY:-}}
@@ -46,6 +47,7 @@ services:
       HISTORY_MAX_TOKENS: ${HISTORY_MAX_TOKENS:-6000}
       MCP_ENABLED: ${MCP_ENABLED:-1}
       ITMO_STATE_DIR: /run/itmo
+      ITMO_VAULT_KEY_FILE: ${ITMO_VAULT_KEY_FILE:-}
       ITMO_AUTH_PUBLIC_URL: ${ITMO_AUTH_PUBLIC_URL:-}
       ITMO_AUTH_PORT: ${ITMO_AUTH_PORT:-8081}
       SUPERVISOR_ENABLED: ${SUPERVISOR_ENABLED:-1}
@@ -54,6 +56,12 @@ services:
       MCP_RESOURCE_TIMEZONE: ${MCP_RESOURCE_TIMEZONE:-Europe/Moscow}
     volumes:
       - itmo_state:/run/itmo
+      - type: bind
+        source: ${ITMO_VAULT_KEY_PATH:-./.env.example}
+        target: /run/secrets/itmo_vault_key
+        read_only: true
+        bind:
+          create_host_path: false
     depends_on:
       db:
         condition: service_healthy

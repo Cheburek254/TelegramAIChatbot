@@ -13,6 +13,7 @@ from aiogram.exceptions import (
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.context import split_telegram
+from app.db import job_owners, owner_scope
 from app.material_contracts import SearchOutput
 from app.mcp_service.contracts import ScheduleOutput, WeatherOutput
 from app.orchestration.contracts import City
@@ -325,12 +326,13 @@ class Scheduler:
         return True
 
     async def tick(self):
-        await self.prepare_due()
-        # Bound work per tick and let cancellation shut down promptly.
-        for _ in range(20):
-            if not await self.deliver_one():
-                break
-        await self.store.cleanup(self.clock())
+        for owner in await job_owners(getattr(self.store, "pool", None)):
+            with owner_scope(owner):
+                await self.prepare_due()
+                for _ in range(20):
+                    if not await self.deliver_one():
+                        break
+                await self.store.cleanup(self.clock())
 
     async def run(self):
         async with asyncio.TaskGroup() as group:
