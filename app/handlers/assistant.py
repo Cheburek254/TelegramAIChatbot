@@ -6,7 +6,13 @@ from html import escape
 import asyncpg
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    WebAppInfo,
+)
 from aiogram.utils.chat_action import ChatActionSender
 
 from app.agent import SCHEDULE_HEADING, Agent
@@ -55,10 +61,13 @@ STORAGE_ERROR = "Не удалось обработать запрос. Попр
 CONTEXT_ERROR = "Сообщение слишком большое для контекста. Сократите его и отправьте снова."
 
 
-def create_router(*, bot_username=None) -> Router:
+def create_router(*, bot_username=None, miniapp_url=None) -> Router:
     router = Router(name="assistant")
     router.message.filter(F.chat.type == "private", F.from_user.is_bot == False)  # noqa: E712
     router.callback_query.filter(F.message.chat.type == "private")
+
+    def app_button():
+        return InlineKeyboardButton(text="📱 Мой план", web_app=WebAppInfo(url=miniapp_url))
 
     @router.message(Command("jew"))
     async def speech_style(
@@ -107,7 +116,23 @@ def create_router(*, bot_username=None) -> Router:
 
     @router.message(Command("start"))
     async def start(message: Message):
-        await message.answer(START_TEXT, parse_mode="HTML", reply_markup=main_keyboard())
+        keyboard = main_keyboard()
+        if miniapp_url:
+            keyboard.inline_keyboard.insert(0, [app_button()])
+        await message.answer(START_TEXT, parse_mode="HTML", reply_markup=keyboard)
+
+    @router.message(Command("app"))
+    async def open_miniapp(message: Message):
+        if not miniapp_url:
+            await send_parts(
+                message, "Панель пока недоступна. Откройте расписание через /schedule."
+            )
+            return
+        await send_parts(
+            message,
+            "📱 Расписание, задачи и напоминания в одной панели.",
+            keyboard=InlineKeyboardMarkup(inline_keyboard=[[app_button()]]),
+        )
 
     @router.message(Command("study", "translate", "review"))
     async def mode(message: Message, command: CommandObject, assistant: Assistant):

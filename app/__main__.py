@@ -5,7 +5,7 @@ import secrets
 
 import aiohttp
 from aiogram import Dispatcher
-from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats
+from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, MenuButtonWebApp, WebAppInfo
 
 from app.agent import Agent
 from app.agent_store import AgentStore
@@ -30,6 +30,7 @@ from app.material_store import MaterialStore
 from app.mcp_client import MCPBridge
 from app.mcp_service.weather import Weather
 from app.migrations import migrate
+from app.miniapp import MiniApp
 from app.orchestration.geography import Geography
 from app.orchestration.notifications import Notifications
 from app.orchestration.scheduler import Scheduler
@@ -61,6 +62,7 @@ async def run(settings: Settings) -> None:
     scheduler_task = None
     scheduler = None
     notifications = None
+    miniapp_url = None
     try:
         state.pool = await create_pool(settings)
         logger.info("PostgreSQL подключён: SELECT 1 выполнен.")
@@ -84,6 +86,8 @@ async def run(settings: Settings) -> None:
             timezone=settings.mcp_resource_timezone,
             itmo=ITMOClient(settings.itmo_state_dir),
         )
+        store = AssistantStore(state.pool)
+        planner_store = PlannerStore(state.pool)
         if settings.itmo_auth_public_url:
             from urllib.parse import urlsplit
 
@@ -101,7 +105,17 @@ async def run(settings: Settings) -> None:
             itmo_auth = ITMOAuth(
                 AuthStore(state.pool), schedule_service.itmo, settings.itmo_auth_public_url
             )
-            auth_runner = await start_auth_server(itmo_auth, settings.itmo_auth_port)
+            miniapp_url = settings.itmo_auth_public_url + "/miniapp/"
+            miniapp = MiniApp(
+                settings.itmo_auth_public_url,
+                settings.bot_token,
+                schedule_service,
+                planner_store,
+                store,
+            )
+            auth_runner = await start_auth_server(
+                itmo_auth, settings.itmo_auth_port, miniapp=miniapp
+            )
         assistant = Assistant(
             settings, PostgresRepository(state.pool), LLMClient(settings, llm_session)
         )
@@ -110,7 +124,6 @@ async def run(settings: Settings) -> None:
             await bridge.start()
             agent = Agent(settings, AgentStore(state.pool), assistant.llm, bridge)
             if settings.supervisor_enabled:
-                store = AssistantStore(state.pool)
                 agent = Supervisor(settings, store, assistant, bridge)
                 notifications = Notifications(store, Geography(Weather(llm_session)))
                 watch_store = ItmoWatchStore(state.pool)
@@ -128,6 +141,7 @@ async def run(settings: Settings) -> None:
                     BotCommand(command=name, description=description)
                     for name, description in [
                         ("start", "Возможности и команды"),
+                        *([("app", "Открыть учебный план")] if miniapp_url else []),
                         ("study", "Учебный помощник"),
                         ("translate", "Переводчик"),
                         ("review", "Ревью кода"),
@@ -158,13 +172,20 @@ async def run(settings: Settings) -> None:
             )
         except Exception:
             logger.warning("Не удалось обновить меню команд Telegram.")
+        if miniapp_url:
+            try:
+                await bot.set_chat_menu_button(
+                    menu_button=MenuButtonWebApp(
+                        text="Мой план", web_app=WebAppInfo(url=miniapp_url)
+                    )
+                )
+            except Exception:
+                logger.warning("Не удалось установить кнопку Mini App.")
         dispatcher = Dispatcher()
         if notifications:
             dispatcher.message.outer_middleware(ContactMiddleware(store))
             dispatcher.callback_query.outer_middleware(ContactMiddleware(store))
-            planner = Planner(
-                PlannerStore(state.pool), notifications, settings.mcp_resource_timezone
-            )
+            planner = Planner(planner_store, notifications, settings.mcp_resource_timezone)
             dispatcher.include_router(
                 create_planner_router(
                     planner,
@@ -187,7 +208,7 @@ async def run(settings: Settings) -> None:
                     bot_username=me.username,
                 )
             )
-        dispatcher.include_router(create_router(bot_username=me.username))
+        dispatcher.include_router(create_router(bot_username=me.username, miniapp_url=miniapp_url))
         runner = await start_health_server(state, settings.health_port)
         state.polling_task = asyncio.create_task(
             dispatcher.start_polling(

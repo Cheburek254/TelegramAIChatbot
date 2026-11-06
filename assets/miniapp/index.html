@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Telegram AI Chatbot · Мой план</title>
+  <link rel="stylesheet" href="/miniapp/app.css">
+  <script src="https://telegram.org/js/telegram-web-app.js?64"></script>
+  <script src="/miniapp/app.js" defer></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <span class="brand">TELEGRAM AI CHATBOT</span>
+      <h1>Мой учебный план</h1>
+      <p>Пары, дедлайны и напоминания</p>
+    </header>
+    <nav class="tabs" aria-label="Разделы учебного плана">
+      <button type="button" data-view="schedule" aria-pressed="true">Расписание</button>
+      <button type="button" data-view="tasks" aria-pressed="false">Задачи</button>
+      <button type="button" data-view="reminders" aria-pressed="false">Напоминания</button>
+    </nav>
+    <section class="panel" aria-labelledby="heading">
+      <div class="panel-title">
+        <div>
+          <h2 id="heading">Ближайшие 7 дней</h2>
+          <p id="source" hidden></p>
+        </div>
+        <button type="button" id="refresh" hidden>Обновить</button>
+      </div>
+      <p id="status" role="status">Откройте панель в Telegram.</p>
+      <div id="items"></div>
+      <button type="button" id="more" hidden>Показать ещё</button>
+    </section>
+    <p class="hint">Задачи и напоминания можно менять в чате с ботом.</p>
+  </main>
+</body>
+</html>

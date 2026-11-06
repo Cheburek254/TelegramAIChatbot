@@ -10,6 +10,7 @@ from pathlib import Path
 from aiohttp import web
 
 from app.itmo_login import LoginError
+from app.miniapp import MINIAPP_CSP
 
 ASSETS = Path("assets/itmo-auth")
 MESSAGES = {
@@ -25,25 +26,30 @@ MESSAGES = {
 }
 
 
-def create_auth_app(service):
+def create_auth_app(service, *, miniapp=None):
     cookie_key = service.cipher.encrypt(b"cookie-signing-key")
     cookie_key = hashlib.sha256(cookie_key).digest()
 
     @web.middleware
     async def secure(request, handler):
+        is_miniapp = miniapp is not None and request.path.startswith("/miniapp/")
         try:
             response = await handler(request)
         except web.HTTPException as exc:
             response = exc
         except Exception:
             response = web.json_response(
-                {"error": "Не удалось выполнить вход. Повторите позже."}, status=503
+                {
+                    "error": "Сервис временно недоступен. Повторите позже."
+                    if is_miniapp
+                    else "Не удалось выполнить вход. Повторите позже."
+                },
+                status=503,
             )
         response.headers.update(
             {
                 "Cache-Control": "no-store",
                 "Referrer-Policy": "no-referrer",
-                "X-Frame-Options": "DENY",
                 "X-Content-Type-Options": "nosniff",
                 "Content-Security-Policy": (
                     "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
@@ -52,6 +58,12 @@ def create_auth_app(service):
                 "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
             }
         )
+        if is_miniapp:
+            response.headers["Content-Security-Policy"] = MINIAPP_CSP
+        else:
+            response.headers["X-Frame-Options"] = "DENY"
+        if isinstance(response, web.HTTPException):
+            raise response
         return response
 
     def signature(value):
@@ -118,6 +130,8 @@ def create_auth_app(service):
     app.router.add_get("/itmo/login", page)
     app.router.add_get("/itmo/{name:auth[.](?:js|css)}", asset)
     app.router.add_post("/itmo/session", login)
+    if miniapp is not None:
+        miniapp.register(app)
 
     async def reap():
         while True:
@@ -137,8 +151,8 @@ def create_auth_app(service):
     return app
 
 
-async def start_auth_server(service, port):
-    runner = web.AppRunner(create_auth_app(service), access_log=None)
+async def start_auth_server(service, port, *, miniapp=None):
+    runner = web.AppRunner(create_auth_app(service, miniapp=miniapp), access_log=None)
     await runner.setup()
     try:
         await web.TCPSite(runner, "0.0.0.0", port).start()
