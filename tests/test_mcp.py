@@ -228,6 +228,7 @@ async def test_independent_mcp_client_discovers_resource_and_denies_write():
         assert {tool.name for tool in tools} == {
             "get_weather",
             "get_schedule",
+            "get_tasks",
             "add_reminder",
             "search_materials",
         }
@@ -246,6 +247,12 @@ async def test_independent_mcp_client_discovers_resource_and_denies_write():
         assert found.structuredContent["hits"][0]["doc_id"] == "reliable-delivery"
         result = await client.call_tool("get_schedule", {"date": "2026-10-12"})
         assert result.isError and result.content[0].text == "trusted_context_required"
+        task_denied = await client.call_tool("get_tasks", {"scope": "upcoming"})
+        assert task_denied.isError and task_denied.content[0].text == "trusted_context_required"
+        task_forgery = await client.call_tool("get_tasks", {"scope": "upcoming", "owner": 101})
+        assert (
+            task_forgery.isError and task_forgery.content[0].text == "invalid_arguments_or_result"
+        )
         with pytest.raises(McpError):
             await client.read_resource(AnyUrl("schedule://current-week"))
         denied = await client.call_tool(
@@ -266,7 +273,7 @@ async def test_bridge_discovery_validation_and_disconnect():
     bridge = MCPBridge(settings, "test-context-secret")
     try:
         assert await bridge.start()
-        assert len(bridge.schemas()) == 4
+        assert len(bridge.schemas()) == 5
         with pytest.raises(MCPFailure, match="unknown_tool"):
             await bridge.call("exec", {})
         with pytest.raises(MCPFailure, match="invalid_arguments"):

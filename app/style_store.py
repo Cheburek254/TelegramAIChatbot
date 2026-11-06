@@ -18,6 +18,11 @@ class SpeechStyleStore:
     def __init__(self, pool):
         self.pool = pool
 
+    async def current(self, owner):
+        return await self.pool.fetchval(
+            "SELECT speech_style FROM chat_users WHERE user_id=$1", owner
+        )
+
     async def propose(self, owner, key, style, now):
         if style not in {"plain", "yiddish"}:
             raise ValueError("invalid_style")

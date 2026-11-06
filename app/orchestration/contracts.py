@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.material_contracts import SearchOutput
-from app.mcp_service.contracts import ScheduleOutput, WeatherOutput, WeekOutput
+from app.mcp_service.contracts import ScheduleOutput, TasksOutput, WeatherOutput, WeekOutput
 
 
 class Contract(BaseModel):
@@ -15,9 +15,9 @@ class Contract(BaseModel):
 
 
 class RouteDecision(Contract):
-    target: Literal["schedule", "knowledge", "lifestyle", "clarify", "legacy"]
+    target: Literal["schedule", "tasks", "knowledge", "lifestyle", "clarify", "legacy"]
     intent: Literal["read", "reminder", "answer", "clarify", "legacy"]
-    scope: Literal["day", "week", "default"]
+    scope: Literal["day", "week", "default", "today", "tomorrow", "upcoming", "overdue", "all"]
     confidence: float = Field(ge=0, le=1)
     reason: str = Field(min_length=1, max_length=240)
 
@@ -66,8 +66,14 @@ class KnowledgeFacts(Contract):
     data: SearchOutput
 
 
+class TaskFacts(Contract):
+    kind: Literal["tasks"] = "tasks"
+    data: TasksOutput
+
+
 Facts = Annotated[
-    EmptyFacts | ScheduleFacts | WeatherFacts | KnowledgeFacts, Field(discriminator="kind")
+    EmptyFacts | ScheduleFacts | WeatherFacts | KnowledgeFacts | TaskFacts,
+    Field(discriminator="kind"),
 ]
 
 

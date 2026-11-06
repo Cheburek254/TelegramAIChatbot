@@ -6,6 +6,7 @@ from app.orchestration.tracing import span
 TOOLS = {
     "router": frozenset(),
     "schedule": frozenset({"get_schedule", "add_reminder"}),
+    "tasks": frozenset({"get_tasks"}),
     "knowledge": frozenset({"search_materials"}),
     "lifestyle": frozenset({"get_weather"}),
     "legacy": frozenset(),
@@ -51,7 +52,7 @@ class PolicyBridge:
             self.component, "mcp", tool_name=name if name in TOOLS[self.component] else "denied"
         ):
             self.validate(name, arguments)
-            if name in {"get_weather", "search_materials"} and self.owner is not None:
+            if name in {"get_weather", "search_materials", "get_tasks"} and self.owner is not None:
                 trusted["owner"] = self.owner
             result = await self.bridge.call(name, arguments, **trusted)
             self.calls.append(name)

@@ -1,7 +1,9 @@
 """Личные задачи и подтверждённые изменения уведомлений."""
 
 import uuid
-from datetime import timedelta
+from datetime import datetime, time, timedelta
+
+from app.timezones import zone
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS personal_tasks (
@@ -75,6 +77,49 @@ class PlannerStore:
             owner,
             end,
         )
+
+    async def read_tasks(self, owner, scope, now, default_timezone):
+        timezone = (
+            await self.pool.fetchval("SELECT timezone FROM agent_settings WHERE user_id=$1", owner)
+            or default_timezone
+        )
+        tz = zone(timezone)
+        today = now.astimezone(tz).date()
+        first, last = None, None
+        if scope == "upcoming":
+            first = now
+        elif scope == "overdue":
+            last = now
+        elif scope in {"today", "tomorrow", "week"}:
+            if scope == "week":
+                start = today - timedelta(days=today.weekday())
+                days = 7
+            else:
+                start = today + timedelta(days=scope == "tomorrow")
+                days = 1
+            first = datetime.combine(start, time(), tz)
+            last = datetime.combine(start + timedelta(days=days), time(), tz)
+        rows = await self.pool.fetch(
+            "SELECT text,due_at FROM personal_tasks WHERE user_id=$1 AND completed_at IS NULL "
+            "AND ($2::timestamptz IS NULL OR due_at>=$2) "
+            "AND ($3::timestamptz IS NULL OR due_at<$3) "
+            "ORDER BY due_at NULLS LAST,id LIMIT 13",
+            owner,
+            first,
+            last,
+        )
+        return {
+            "scope": scope,
+            "timezone": timezone,
+            "tasks": [
+                {
+                    "text": row["text"],
+                    "due_at": row["due_at"].isoformat() if row["due_at"] else None,
+                }
+                for row in rows[:12]
+            ],
+            "more": len(rows) > 12,
+        }
 
     async def proposal(
         self,

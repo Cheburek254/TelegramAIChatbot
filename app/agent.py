@@ -17,6 +17,7 @@ from app.mcp_service.contracts import (
     ReminderInput,
     RoutingDecision,
     ScheduleInput,
+    ScheduleOutput,
     WeatherInput,
 )
 from app.prompts import PROMPTS
@@ -93,6 +94,31 @@ SAFE_ERRORS = {
         "Достигнут лимит двух обращений к инструментам. Уточните запрос и попробуйте снова."
     ),
 }
+SCHEDULE_HEADING = "📅 Расписание на "
+TOOL_ERROR = (
+    "Инструмент сейчас недоступен или вернул некорректные данные. "
+    "Действие не выполнено; попробуйте позже."
+)
+
+
+def render_schedule(days):
+    sections = []
+    for day in days:
+        lines = [
+            f"{lesson.start}–{lesson.end} · {lesson.title}\n📍 {lesson.location}"
+            for lesson in day.lessons
+        ]
+        sections.append(
+            f"{SCHEDULE_HEADING}{day.date}\n"
+            f"Источник: {day.source}\n\n" + ("\n\n".join(lines) if lines else "Занятий нет.")
+        )
+    content = "\n\n".join(sections)
+    if len(content) > 29000:
+        content = (
+            content[:29000].rsplit("\n\n", 1)[0]
+            + "\n\nПоказана часть расписания. Остальные занятия доступны в меню «Расписание»."
+        )
+    return content
 
 
 @dataclass(frozen=True)
@@ -195,7 +221,11 @@ class Agent:
     async def choose(
         self, messages, temperature, *, allow_fallback=True, timezone=None, speech_style="default"
     ):
-        schemas = self.bridge.schemas()
+        schemas = [
+            item
+            for item in self.bridge.schemas()
+            if item["function"]["name"] in {"get_weather", "get_schedule", "add_reminder"}
+        ]
         instruction = (
             "Сначала выбери действие в JSON по схеме. call_tool означает предложение "
             "вызова, а не выполнение операции. tool_name берётся только из доступных схем. "
@@ -253,7 +283,9 @@ class Agent:
                 action=decision.action, answer=decision.answer, reason=decision.reason
             )
             return replace(routed, content=answer.model_dump_json())
-        if not self.bridge.available or decision.tool_name not in self.bridge.tools:
+        if not self.bridge.available or not any(
+            item["function"]["name"] == decision.tool_name for item in schemas
+        ):
             raise MCPFailure("unknown_tool")
         # Схемы и native-вызов остаются полученными через MCP. Строгая первая
         # стадия отделяет выбор операции от извлечения аргументов и согласия.
@@ -330,6 +362,7 @@ class Agent:
             )
             reply = None
             count = 0
+            schedules = []
             try:
                 messages = self.messages(profile, history, text, timezone)
                 while True:
@@ -408,6 +441,11 @@ class Agent:
                             if (tool == "get_schedule")
                             else await self.bridge.call(tool, args)
                         )
+                        if tool == "get_schedule":
+                            schedule = ScheduleOutput.model_validate(data)
+                            if schedule.date != args["date"]:
+                                raise MCPFailure("mcp_invalid_result")
+                            schedules.append(schedule)
                         count += 1
                         messages.append(
                             {
@@ -423,6 +461,10 @@ class Agent:
                             )
                             > self.settings.history_max_tokens
                         ):
+                            if tool == "get_schedule":
+                                reply = AgentReply(render_schedule(schedules))
+                                reason = "Расписание показано напрямую из-за лимита контекста."
+                                break
                             raise MCPFailure("tool_result_too_large")
                     if reply:
                         break
@@ -437,15 +479,7 @@ class Agent:
                     else str(exc)
                 )
                 status = code
-                reply = AgentReply(
-                    SAFE_ERRORS.get(
-                        code,
-                        (
-                            "Инструмент сейчас недоступен или вернул некорректные данные. "
-                            "Действие не выполнено; попробуйте позже."
-                        ),
-                    )
-                )
+                reply = AgentReply(SAFE_ERRORS.get(code, TOOL_ERROR))
                 reason = "Выполнение остановлено проверкой приложения."
             except LLMError:
                 status = "llm_unavailable"

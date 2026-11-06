@@ -102,7 +102,14 @@ def create_planner_router(planner, *, bot_username=None):
             if moving
             else planner_item_rows(kind, item)
         )
-        title = "Выберите перенос" if moving else notice
+        title = (
+            "Выберите перенос"
+            if moving
+            else notice
+            or {"t": "📌 Задача", "r": "🔔 Разовое напоминание", "d": "🔁 Ежедневное напоминание"}[
+                kind
+            ]
+        )
         text = f"{item['text']}\n\n{when_text(kind, item)}"
         reference = f"{kind}-{item['id'].hex}-{item['version']}"
         if moving:

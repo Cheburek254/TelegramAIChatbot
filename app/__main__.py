@@ -39,6 +39,7 @@ from app.schedule_service import ScheduleService
 from app.schedule_store import ScheduleStore
 from app.speech_style import SpeechStyles
 from app.style_store import SpeechStyleStore
+from app.system_speech import SystemSpeechMiddleware
 from app.telegram import create_bot
 
 logger = logging.getLogger("app")
@@ -70,6 +71,8 @@ async def run(settings: Settings) -> None:
             )
         logger.info("Telegram доступен. Бот @%s запускает polling.", me.username)
         await migrate(state.pool)
+        style_store = SpeechStyleStore(state.pool)
+        bot.session.middleware(SystemSpeechMiddleware(style_store))
         llm_session = aiohttp.ClientSession(trust_env=False)
         schedule_service = ScheduleService(
             ScheduleStore(state.pool),
@@ -177,7 +180,7 @@ async def run(settings: Settings) -> None:
                 agent=agent,
                 schedule_service=schedule_service,
                 itmo_auth=itmo_auth,
-                speech_styles=SpeechStyles(SpeechStyleStore(state.pool), assistant.repository),
+                speech_styles=SpeechStyles(style_store, assistant.repository),
                 allowed_updates=dispatcher.resolve_used_update_types(),
                 close_bot_session=False,
             )

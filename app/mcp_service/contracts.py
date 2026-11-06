@@ -39,6 +39,32 @@ class ScheduleInput(StrictModel):
         return value
 
 
+TaskScope = Literal["upcoming", "overdue", "today", "tomorrow", "week", "all"]
+
+
+class TasksInput(StrictModel):
+    scope: TaskScope
+
+
+class TaskItem(StrictModel):
+    text: str = Field(min_length=1, max_length=500)
+    due_at: str | None
+
+    @field_validator("due_at")
+    @classmethod
+    def aware(cls, value):
+        if value is not None and datetime.fromisoformat(value).utcoffset() is None:
+            raise ValueError("aware_time_required")
+        return value
+
+
+class TasksOutput(StrictModel):
+    scope: TaskScope
+    timezone: str
+    tasks: list[TaskItem] = Field(max_length=12)
+    more: bool
+
+
 class ReminderInput(StrictModel):
     text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
     remind_at: str = Field(
@@ -105,16 +131,19 @@ class WeekOutput(StrictModel):
 INPUTS = {
     "get_weather": WeatherInput,
     "get_schedule": ScheduleInput,
+    "get_tasks": TasksInput,
     "add_reminder": ReminderInput,
     "search_materials": SearchInput,
 }
 OUTPUTS = {
     "get_weather": WeatherOutput,
     "get_schedule": ScheduleOutput,
+    "get_tasks": TasksOutput,
     "add_reminder": ReminderOutput,
     "search_materials": SearchOutput,
 }
 DESCRIPTIONS = {
+    "get_tasks": "Прочитать открытые личные задачи или дедлайны по выбранному периоду.",
     "search_materials": "Поиск по фиксированным учебным материалам. Возвращает выдержки и doc_id.",
     "get_weather": (
         "Текущая погода: температура, осадки/условия, ветер; также для "

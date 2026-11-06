@@ -21,6 +21,7 @@ from app.mcp_service.auth import verify
 from app.mcp_service.contracts import DESCRIPTIONS, INPUTS, OUTPUTS
 from app.mcp_service.materials import Materials
 from app.mcp_service.weather import ToolFailure, Weather
+from app.planner_store import PlannerStore
 from app.schedule_source import ScheduleSource
 from app.schedule_store import ScheduleStore
 
@@ -34,6 +35,7 @@ def create_server(
     timezone="Europe/Moscow",
     city_handler=None,
     materials_handler=None,
+    tasks_handler=None,
 ):
     server = Server("ai-study-assistant", version="2.0.0")
     clock = clock or (lambda: datetime.now(UTC))
@@ -129,6 +131,12 @@ def create_server(
                 meta = server.request_context.meta
                 owner, _ = verify(secret, meta.model_dump() if meta else {})
                 result = await schedule.day(owner, payload["date"])
+            elif name == "get_tasks":
+                meta = server.request_context.meta
+                owner, _ = verify(secret, meta.model_dump() if meta else {})
+                if tasks_handler is None:
+                    raise ToolFailure("tool_unavailable")
+                result = await tasks_handler(owner, payload["scope"], clock(), timezone)
             else:
                 meta = server.request_context.meta
                 owner, action = verify(secret, meta.model_dump() if meta else {})
@@ -181,6 +189,9 @@ async def main():
     async def reminder(owner, action, payload, now):
         return await AgentStore(await get_pool()).create_reminder(owner, action, payload, now)
 
+    async def tasks(owner, scope, now, timezone):
+        return await PlannerStore(await get_pool()).read_tasks(owner, scope, now, timezone)
+
     async def city_weather(owner, query, weather):
         from app.orchestration.contracts import City
         from app.orchestration.geography import Geography
@@ -221,6 +232,7 @@ async def main():
                 timezone=os.getenv("MCP_RESOURCE_TIMEZONE", "Europe/Moscow"),
                 city_handler=city_weather,
                 materials_handler=personal_materials,
+                tasks_handler=tasks,
             )
             async with stdio_server() as (reader, writer):
                 await server.run(reader, writer, server.create_initialization_options())

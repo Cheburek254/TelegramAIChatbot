@@ -9,12 +9,13 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from aiogram.utils.chat_action import ChatActionSender
 
-from app.agent import Agent
+from app.agent import SCHEDULE_HEADING, Agent
 from app.assistant import Assistant
 from app.context import ContextTooLarge, split_telegram
 from app.itmo_auth import ITMOAuth
 from app.itmo_login import LoginError
 from app.llm import LLMError
+from app.orchestration.supervisor import TASKS_HEADING
 from app.presentation import (
     confirmation_keyboard,
     draft_button,
@@ -391,7 +392,14 @@ def create_router(*, bot_username=None) -> Router:
             logger.warning("storage_failure request=%s", uuid.uuid4())
             answer = STORAGE_ERROR
         await send_with_trace(
-            message, send_parts(message, answer, format_model=True), agent, locals().get("result")
+            message,
+            send_parts(
+                message,
+                answer,
+                format_model=not answer.startswith((SCHEDULE_HEADING, TASKS_HEADING)),
+            ),
+            agent,
+            locals().get("result"),
         )
 
     @router.message(Command("remind", "weather"))

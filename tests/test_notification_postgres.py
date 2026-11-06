@@ -1,4 +1,4 @@
-"""Настоящая PostgreSQL; Telegram/LLM/MCP заменены, время управляемое."""
+"""Настоящая PostgreSQL, без внешних Telegram/LLM-сервисов."""
 
 import asyncio
 import os
@@ -12,6 +12,7 @@ from aiogram.methods import SendMessage
 
 from app.agent_store import AgentStore
 from app.db import create_pool
+from app.mcp_client import MCPBridge, MCPFailure
 from app.migrations import migrate
 from app.orchestration.notifications import Notifications
 from app.orchestration.scheduler import Scheduler
@@ -318,6 +319,21 @@ async def test_planner_tasks_briefing_and_rescheduled_reminders(database):
         assert await planner_store.confirm(owner, task, now) == ("added", "t", task)
         assert await planner_store.confirm(owner, task, now) == ("invalid", None, None)
         assert not await planner_store.active(stranger, "t", 0)
+        assert (await planner_store.read_tasks(owner, "today", now, "UTC"))["tasks"] == [
+            {"text": "Сдать отчёт", "due_at": "2026-11-06T15:00:00+00:00"}
+        ]
+        for scope in ("tomorrow", "overdue"):
+            assert not (await planner_store.read_tasks(owner, scope, now, "UTC"))["tasks"]
+        task_bridge = MCPBridge(settings, "synthetic-task-context")
+        try:
+            assert await task_bridge.start()
+            with pytest.raises(MCPFailure, match="trusted_context_required"):
+                await task_bridge.call("get_tasks", {"scope": "all"})
+            own = await task_bridge.call("get_tasks", {"scope": "all"}, owner=owner)
+            foreign = await task_bridge.call("get_tasks", {"scope": "all"}, owner=stranger)
+            assert own["tasks"][0]["text"] == "Сдать отчёт" and foreign["tasks"] == []
+        finally:
+            await task_bridge.close()
         content = await scheduler.briefing.prepare(
             owner, {"timezone": "Europe/Moscow", "city": CITY}, now
         )

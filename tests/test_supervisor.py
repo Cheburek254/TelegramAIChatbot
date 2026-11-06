@@ -60,6 +60,8 @@ def bridge():
         ("knowledge", "add_reminder"),
         ("lifestyle", "add_reminder"),
         ("schedule", "search_materials"),
+        ("schedule", "get_tasks"),
+        ("tasks", "add_reminder"),
         ("schedule", "unknown_future_tool"),
     ],
 )
@@ -200,6 +202,25 @@ class MemoryAssistantStore:
         self.cache[owner, key] = dict(
             response=reply.content, pending_id=reply.pending_id, trace_id=trace
         )
+
+
+async def test_natural_deadlines_query_reads_only_signed_mcp_and_shows_exact_facts():
+    raw, store = bridge(), MemoryAssistantStore()
+    raw.call.return_value = {
+        "scope": "upcoming",
+        "timezone": "Europe/Moscow",
+        "tasks": [{"text": "Отчёт по ООП", "due_at": "2026-10-13T15:30:00+00:00"}],
+        "more": False,
+    }
+    llm = Mock(complete=AsyncMock())
+    settings = Settings(bot_token="unused", postgres_password="unused")
+    service = Supervisor(settings, store, Assistant(settings, MemoryRepository(), llm), raw)
+    service.base.store.timezone = AsyncMock(return_value="Europe/Moscow")
+    result = await service.respond(101, "Какие у меня ближайшие дедлайны?", "tasks")
+    assert "13.10.2026 18:30 · Отчёт по ООП" in result.content
+    assert result.pending_id is None
+    raw.call.assert_awaited_once_with("get_tasks", {"scope": "upcoming"}, owner=101)
+    llm.complete.assert_not_awaited()
 
 
 async def test_trace_drops_raw_text_and_keeps_real_provider_usage():
