@@ -8,7 +8,7 @@ from pathlib import Path
 
 from cryptography.fernet import Fernet
 
-DEFAULT_REVOKE_DAYS = 30
+DEFAULT_REVOKE_DAYS = 3
 STALE_WARNING = "Данные ИТМО могут быть устаревшими. Показано сохранённое расписание."
 PARTIAL_WARNING = STALE_WARNING + " Сохранённая копия покрывает только часть периода."
 NO_CACHE_WARNING = "Данные ИТМО могут быть устаревшими. Показано только личное расписание."

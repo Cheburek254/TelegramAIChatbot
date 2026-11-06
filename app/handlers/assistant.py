@@ -368,7 +368,7 @@ def create_router(*, bot_username=None, miniapp_url=None) -> Router:
             [InlineKeyboardButton(text="🔐 Войти в ИТМО", callback_data="itmo:connect")],
             [
                 InlineKeyboardButton(text=f"{days} дн.", callback_data=f"itmo:policy:{days}")
-                for days in (7, 30, 90)
+                for days in (3, 7, 30, 90)
             ],
             [
                 InlineKeyboardButton(

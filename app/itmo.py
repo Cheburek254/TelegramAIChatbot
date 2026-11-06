@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import sys
 import tempfile
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
@@ -304,7 +305,9 @@ class ITMOClient:
 
     async def exchange_encrypted(self, owner, state, first, last):
         # Node writes rotated credentials back. On Linux the plaintext is confined to tmpfs.
-        with tempfile.TemporaryDirectory(dir="/dev/shm" if os.name == "posix" else None) as path:
+        with tempfile.TemporaryDirectory(
+            dir="/dev/shm" if sys.platform == "linux" else None
+        ) as path:
             directory = Path(path)
             target = directory / "state.json"
             refresh = state["sdk"].get("refreshToken")

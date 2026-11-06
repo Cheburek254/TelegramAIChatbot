@@ -82,13 +82,13 @@ async def test_expiry_revokes_without_read_request_and_off_disables_expiry(tmp_p
     client = ITMOClient(tmp_path, clock=lambda: now, revoke=revoke)
     async with client.session_lock(101):
         await client.install(101, REFRESH, "first")
-    assert client.status(101)["days"] == 30
+    assert client.status(101)["days"] == 3
     assert "украденный токен" in change_prompt("off")
     assert await client.apply_control(101, "off") == "saved"
-    now += timedelta(days=31)
+    now += timedelta(days=4)
     assert client.connected(101)
-    assert await client.apply_control(101, 40) == "saved"
-    now += timedelta(days=10)
+    assert await client.apply_control(101, 5) == "saved"
+    now += timedelta(days=2)
     worker = asyncio.create_task(client.maintenance())
     try:
         await asyncio.wait_for(done.wait(), 3)

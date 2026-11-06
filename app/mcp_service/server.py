@@ -204,7 +204,7 @@ async def main():
 
     async def city_weather(owner, query, weather):
         from app.orchestration.contracts import City
-        from app.orchestration.geography import Geography
+        from app.orchestration.geography import DEFAULT_CITY, Geography
         from app.orchestration.store import AssistantStore, decode
 
         profile = await AssistantStore(await get_pool()).profile(owner)
@@ -212,6 +212,8 @@ async def main():
             city = City.model_validate(decode(profile["city"]))
             if query == city.name + ", " + city.country:
                 return await Geography(weather).current(city.model_dump())
+        if query == DEFAULT_CITY.name + ", " + DEFAULT_CITY.country:
+            return await Geography(weather).current(DEFAULT_CITY)
         return await weather.current(query)
 
     async def personal_materials(owner, query, limit):

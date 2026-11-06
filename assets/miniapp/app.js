@@ -224,7 +224,7 @@ function itmoPolicy(data) {
     element("p", "Срок отсчитывается с последнего подключения аккаунта.", "meta"),
     field("mode", "Автоотключение", "select", data.itmo_days === null ? "off" : "on",
       [["on", "Включено"], ["off", "Выключено"]]),
-    field("days", "Дней после входа", "number", data.itmo_days ?? 30,
+    field("days", "Дней после входа", "number", data.itmo_days ?? 3,
       {required: true, min: 1, max: 365}),
   ], values => prepareItmo(values.mode === "off" ? "off" : Number(values.days)));
 }

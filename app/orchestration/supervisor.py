@@ -19,6 +19,7 @@ from app.mcp_service.contracts import ScheduleOutput, TasksOutput, WeatherOutput
 from app.orchestration.contracts import (
     AgentRequest,
     AgentResult,
+    City,
     EmptyFacts,
     KnowledgeFacts,
     RouteDecision,
@@ -26,6 +27,7 @@ from app.orchestration.contracts import (
     TaskFacts,
     WeatherFacts,
 )
+from app.orchestration.geography import DEFAULT_CITY
 from app.orchestration.policy import PolicyBridge
 from app.orchestration.store import decode
 from app.orchestration.tracing import Trace, TracedLLM, span
@@ -54,6 +56,23 @@ reason — краткое название основания, не скрыты
 Если предмет задачи не назван, выбирай clarify даже при упоминании даты.
 """
 TASKS_HEADING = "📌 Задачи и дедлайны"
+WEATHER_REQUEST = re.compile(
+    r"(?:какая\s+(?:(?:сейчас|сегодня)\s+)?погода|(?:текущая\s+)?погода|"
+    r"что\s+с\s+погодой|(?:покажи|узнай)\s+погоду)(?:\s+(?:сейчас|сегодня))?"
+    r"(?:\s+(?:(?:в|во|на)\s+)?(?P<city>[^\W\d_]+(?:[ ,.'’‑–-]+[^\W\d_]+)*))?[?!.]*",
+    re.IGNORECASE,
+)
+PETERSBURG_NAMES = {
+    "спб",
+    "питер",
+    "питере",
+    "петербург",
+    "петербурге",
+    "санкт-петербург",
+    "санкт-петербурге",
+    "санкт петербург",
+    "санкт петербурге",
+}
 TASK_LABELS = {
     "upcoming": "ближайшие",
     "overdue": "просроченные",
@@ -100,6 +119,47 @@ def explicit_reminder(text):
     )
 
 
+def current_weather_city(text):
+    match = WEATHER_REQUEST.fullmatch(text.strip())
+    if not match:
+        return None
+    query = " ".join((match["city"] or "").split())
+    if len(query) > 100 or re.search(
+        r"\b(?:завтра|послезавтра|вчера|утром|вечером|неделю|выходные)\b", query, re.I
+    ):
+        return None
+    name, _, region = query.casefold().partition(",")
+    if name.strip() in PETERSBURG_NAMES and region.strip() in {"", "россия", "ru"}:
+        return DEFAULT_CITY.name + ", " + DEFAULT_CITY.country
+    return query
+
+
+def weather_message(data, speech_style):
+    if data.status == "not_found":
+        return "Город не найден. Укажите название в именительном падеже и страну."
+    if data.status == "ambiguous":
+        options = "\n".join(f"• {place.query}" for place in data.options[:5])
+        return "Уточните город или регион. Нашёл несколько вариантов.\n\n" + options
+    if any(
+        value is None
+        for value in (
+            data.place,
+            data.temperature_c,
+            data.wind_speed,
+            data.wind_unit,
+            data.observed_at,
+        )
+    ):
+        raise MCPFailure("mcp_invalid_result")
+    title = "🌤 Шо с погодой" if speech_style == "yiddish" else "🌤 Сейчас"
+    unit = "м/с" if data.wind_unit == "m/s" else data.wind_unit
+    return (
+        f"{title} · {data.place.name}, {data.place.country}\n\n"
+        f"🌡 {data.temperature_c:+g} °C\n💨 Ветер {data.wind_speed:g} {unit}\n\n"
+        f"Данные на {data.observed_at.replace('T', ' ')} · {data.source}"
+    )
+
+
 class Supervisor:
     def __init__(self, settings, store, assistant, bridge, *, clock=None):
         self.settings, self.store, self.assistant, self.bridge = settings, store, assistant, bridge
@@ -111,6 +171,15 @@ class Supervisor:
 
     async def route(self, text):
         async with span("router", "route") as attrs:
+            if current_weather_city(text) is not None:
+                attrs["target"] = "lifestyle"
+                return RouteDecision(
+                    target="lifestyle",
+                    intent="read",
+                    scope="default",
+                    confidence=1.0,
+                    reason="explicit_current_weather",
+                )
             if re.fullmatch(
                 r"(?:какие |покажи )?(?:у меня |мои )?ближайшие дедлайны(?: у меня)?[?!.]?",
                 text.strip().lower(),
@@ -236,6 +305,42 @@ class Supervisor:
             owner=request.actor_id,
         )
         async with span(decision.target, "specialist"):
+            city_query = current_weather_city(request.text)
+            if decision.target == "lifestyle" and city_query is not None:
+                if not city_query:
+                    profile = await self.store.profile(request.actor_id)
+                    city = (
+                        City.model_validate(decode(profile["city"]))
+                        if profile and profile["city"]
+                        else DEFAULT_CITY
+                    )
+                    city_query = city.name + ", " + city.country
+                try:
+                    data = WeatherOutput.model_validate(
+                        await policy.call("get_weather", {"city": city_query})
+                    )
+                    message = weather_message(data, speech_style)
+                except (MCPFailure, ValidationError):
+                    return AgentResult(
+                        status="failed",
+                        message="Погода временно недоступна. Попробуйте позже.",
+                        confidence=1.0,
+                        facts=EmptyFacts(),
+                        used_tools=list(policy.calls),
+                        error_code="weather_unavailable",
+                    ), None
+                return AgentResult(
+                    status={
+                        "ok": "success",
+                        "not_found": "not_found",
+                        "ambiguous": "needs_clarification",
+                    }[data.status],
+                    message=message,
+                    confidence=1.0,
+                    facts=WeatherFacts(data=data),
+                    used_tools=list(policy.calls),
+                    error_code=None,
+                ), None
             if decision.target == "knowledge":
                 return await self.knowledge(request, policy, speech_style), None
             if decision.target == "tasks":
@@ -338,7 +443,10 @@ class Supervisor:
                 async with span("supervisor", "request"):
                     async with self.assistant.repository.session(owner) as conversation:
                         profile = await conversation.profile()
-                    if profile.mode in {"translate", "review"}:
+                    if (
+                        profile.mode in {"translate", "review"}
+                        and current_weather_city(text) is None
+                    ):
                         async with span("legacy", "dialogue"):
                             completion = await self.legacy.respond(owner, text)
                         reply = AgentReply(completion.content)

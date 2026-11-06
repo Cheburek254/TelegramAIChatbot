@@ -19,6 +19,7 @@ from app.itmo_login import LoginError
 from app.itmo_vault import CHANGE_RESULTS, NO_EXPIRY_WARNING, change_prompt
 from app.mcp_service.weather import ToolFailure
 from app.miniapp_changes import FormError, MiniAppChanges
+from app.orchestration.geography import DEFAULT_CITY
 from app.planner_store import PAGE_SIZE
 from app.schedule_store import lesson_payload
 from app.timezones import zone
@@ -284,13 +285,7 @@ class MiniApp:
         city = profile and profile.get("city")
         default_city = not city
         if not city:
-            city = {
-                "name": "Санкт-Петербург",
-                "country": "Россия",
-                "region": "Санкт-Петербург",
-                "latitude": 59.9386,
-                "longitude": 30.3141,
-            }
+            city = DEFAULT_CITY.model_dump()
         elif isinstance(city, str):
             city = json.loads(city)
         try:

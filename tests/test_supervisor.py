@@ -19,8 +19,9 @@ from app.orchestration.contracts import AgentRequest, AgentResult, City, RouteDe
 from app.orchestration.notifications import Notifications
 from app.orchestration.policy import PolicyBridge
 from app.orchestration.scheduler import BriefingService, briefing_due, daily_reminder_times
-from app.orchestration.supervisor import Supervisor, explicit_reminder
+from app.orchestration.supervisor import Supervisor, current_weather_city, explicit_reminder
 from app.orchestration.tracing import Trace, TracedLLM, span
+from app.repository import Profile
 from tests.fakes import MemoryRepository
 
 NOW = datetime(2026, 10, 12, 5, tzinfo=UTC)
@@ -204,6 +205,58 @@ class MemoryAssistantStore:
         )
 
 
+@pytest.mark.parametrize("mode", ["study", "translate", "review"])
+async def test_current_weather_reads_mcp_in_any_mode_without_switching_mode(mode):
+    repository = MemoryRepository()
+    repository.profiles[101] = Profile(mode=mode, speech_style="yiddish")
+    raw, store = bridge(), MemoryAssistantStore()
+    raw.call.return_value = {
+        "status": "ok",
+        "source": "Open-Meteo",
+        "place": {"name": "Санкт-Петербург", "country": "Россия", "region": "", "query": "СПб"},
+        "temperature_c": 4.2,
+        "wind_speed": 3.1,
+        "wind_unit": "m/s",
+        "observed_at": "2026-10-12T08:00",
+    }
+    llm = Mock(complete=AsyncMock())
+    settings = Settings(bot_token="unused", postgres_password="unused")
+    service = Supervisor(settings, store, Assistant(settings, repository, llm), raw)
+    service.base.store.timezone = AsyncMock(return_value=None)
+    result = await service.respond(101, "какая сейчас погода в спб", "weather")
+    raw.call.assert_awaited_once_with("get_weather", {"city": "Санкт-Петербург, Россия"}, owner=101)
+    llm.complete.assert_not_awaited()
+    assert "Шо с погодой" in result.content
+    assert "+4.2 °C" in result.content and "3.1 м/с" in result.content
+    assert repository.profiles[101].mode == mode
+
+
+async def test_current_weather_uses_saved_city_and_reports_tool_outage():
+    raw, store = bridge(), MemoryAssistantStore()
+    raw.call.side_effect = MCPFailure("weather_timeout")
+    store.profile = AsyncMock(return_value={"city": CITY})
+    llm = Mock(complete=AsyncMock())
+    settings = Settings(bot_token="unused", postgres_password="unused")
+    service = Supervisor(settings, store, Assistant(settings, MemoryRepository(), llm), raw)
+    service.base.store.timezone = AsyncMock(return_value=None)
+    result = await service.respond(101, "Какая сейчас погода?", "weather")
+    raw.call.assert_awaited_once_with("get_weather", {"city": "Тестовый, Россия"}, owner=101)
+    llm.complete.assert_not_awaited()
+    assert "Погода временно недоступна" in result.content
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Переведи «Какая сейчас погода в СПб?»",
+        "Проверь код приложения о погоде",
+        "Какая погода в СПб завтра?",
+    ],
+)
+def test_current_weather_shortcut_ignores_mode_requests_and_forecasts(text):
+    assert current_weather_city(text) is None
+
+
 async def test_natural_deadlines_query_reads_only_signed_mcp_and_shows_exact_facts():
     raw, store = bridge(), MemoryAssistantStore()
     raw.call.return_value = {
@@ -250,7 +303,6 @@ async def test_trace_drops_raw_text_and_keeps_real_provider_usage():
 @pytest.mark.parametrize("mode", ["study", "translate", "review"])
 async def test_previous_modes_still_work_and_duplicate_update_reuses_reply(mode):
     repository = MemoryRepository()
-    from app.repository import Profile
 
     repository.profiles[1] = Profile(mode=mode)
     route = dict(

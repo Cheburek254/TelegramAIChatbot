@@ -6,6 +6,14 @@ from app.mcp_service.contracts import Place, WeatherOutput
 from app.mcp_service.weather import ToolFailure
 from app.orchestration.contracts import City
 
+DEFAULT_CITY = City(
+    name="Санкт-Петербург",
+    country="Россия",
+    region="Санкт-Петербург",
+    latitude=59.9386,
+    longitude=30.3141,
+)
+
 
 class Geography:
     def __init__(self, weather):
