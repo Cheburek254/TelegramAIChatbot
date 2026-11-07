@@ -40,16 +40,16 @@ def next_task_due(due, timezone, days, now):
         step += 1
 
 
-def reminder_time(value: str, timezone: str, now: datetime) -> datetime:
+def reminder_time(value: str, timezone: str, now: datetime, *, confirmed: bool = False) -> datetime:
     tz = zone(timezone)
     moment = datetime.fromisoformat(value)
     if moment.tzinfo is None:
         raise ValueError("timezone_required")
     local = moment.replace(tzinfo=None)
     candidates = local_candidates(local, timezone)
-    if len(candidates) != 1:
+    if not candidates or (len(candidates) != 1 and not confirmed):
         raise ValueError("ambiguous_local_time")
-    if moment.utcoffset() != candidates[0].utcoffset():
+    if not any(moment.utcoffset() == candidate.utcoffset() for candidate in candidates):
         raise ValueError("timezone_mismatch")
     result = moment.astimezone(tz)
     if result <= now:

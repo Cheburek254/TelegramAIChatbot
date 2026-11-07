@@ -24,6 +24,7 @@ from app.prompts import PROMPTS
 from app.repository import Conversation
 from app.response_style import enforce_style, styled_prompt
 from app.timezones import reminder_time, zone
+from app.tool_examples import extraction_examples
 
 AGENT_INSTRUCTION = """
 Дополнительно ты агент учебного помощника с MCP-инструментами. Вопросы об актуальной
@@ -69,6 +70,10 @@ EXTRACTION_INSTRUCTION = (
     "Ближайший день недели - первая подходящая дата календаря, а не следующий день. "
     "Для напоминания используй точное время пользователя и сохранённую IANA-зону; "
     "text содержит только действие. Это подготовка карточки; согласие проверит код."
+    " «Через пару минут» означает через 2 минуты, «через полчаса» — через 30 минут, "
+    "«через полтора часа» — через 90 минут от доверенного текущего времени. "
+    "Складывай интервалы по реальному времени, затем переводи момент в сохранённую зону. "
+    "«Через несколько минут», «скоро» и «попозже» требуют уточнения числа или времени."
 )
 
 SAFE_ERRORS = {
@@ -320,6 +325,7 @@ class Agent:
             + "): "
             + ", ".join(calendar),
         }
+        extraction_messages[1:1] = extraction_examples(decision.tool_name, local_now, calendar_zone)
         extracted = await self.llm.complete(
             fit_messages(extraction_messages, self.settings.history_max_tokens, selected),
             temperature,
@@ -511,9 +517,10 @@ class Agent:
 
     async def reminder_card(self, unit, args, timezone, moment):
         identity = await unit.prepare(args, timezone, moment, self.clock())
+        clock = moment.strftime("%d.%m.%Y %H:%M:%S" if moment.second else "%d.%m.%Y %H:%M")
         return AgentReply(
             f"🔔 Подтвердите напоминание\n\n{args['text']}\n"
-            f"📅 {moment:%d.%m.%Y %H:%M}\n🕒 {timezone}\n\n"
+            f"📅 {clock}\n🕒 {timezone}\n\n"
             "Подтверждение действует 5 минут.",
             identity,
         )
@@ -557,7 +564,10 @@ class Agent:
             return AgentReply(
                 "Это подтверждение недействительно или принадлежит другому пользователю."
             )
-        except MCPFailure:
+        except MCPFailure as exc:
+            if str(exc) == "expired":
+                await self._confirmation_audit(user_id, "expired", {}, started)
+                return AgentReply("Время напоминания уже прошло. Задайте новый интервал.")
             await self._confirmation_audit(user_id, "confirmation_retry_required", {}, started)
             return AgentReply(
                 "Не удалось подтвердить создание напоминания. Повторите подтверждение "

@@ -74,7 +74,7 @@ class AgentStore:
                 return dict(row)
             if row["state"] not in {"pending", "confirmed"}:
                 raise ActionError(row["state"])
-            if row["expires_at"] <= now:
+            if row["expires_at"] <= now or row["remind_at"] <= now:
                 await conn.execute(
                     "UPDATE agent_pending SET state='expired' WHERE id=$1", action_id
                 )
@@ -110,7 +110,8 @@ class AgentStore:
                 raise ActionError("expired")
             from app.timezones import reminder_time
 
-            reminder_time(arguments["remind_at"], row["timezone"], now)
+            # The exact aware instant was matched against the confirmed DB row above.
+            reminder_time(arguments["remind_at"], row["timezone"], now, confirmed=True)
             identity = uuid.uuid4()
             await insert_reminder(
                 conn, identity, action_id, owner, row["text"], row["remind_at"], row["timezone"]

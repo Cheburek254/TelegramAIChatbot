@@ -157,6 +157,26 @@ async def test_tools_in_review_use_signed_stdio_and_scoped_database(database, tm
             assert "создано" in (await service.confirm(101, pending.pending_id)).content
             assert "уже создано" in (await service.confirm(101, pending.pending_id)).content
             assert await runtime.fetchval("SELECT count(*) FROM agent_reminders") == 1
+            before = datetime.now(UTC) + timedelta(minutes=2)
+            relative = await service.respond(
+                101, "Напомни мне через пару минут проверить чай", "relative"
+            )
+            after = datetime.now(UTC) + timedelta(minutes=2)
+            moment = await runtime.fetchval(
+                "SELECT remind_at FROM agent_pending WHERE id=$1", relative.pending_id
+            )
+            assert before <= moment <= after
+            assert await runtime.fetchval("SELECT count(*) FROM agent_reminders") == 1
+            assert "создано" in (await service.confirm(101, relative.pending_id)).content
+            assert await runtime.fetchval("SELECT count(*) FROM agent_reminders") == 2
+            short = await service.respond(101, "Напомни через 10 секунд проверить чай", "short")
+            await runtime.execute(
+                "UPDATE agent_pending SET remind_at=$2 WHERE id=$1",
+                short.pending_id,
+                datetime.now(UTC) - timedelta(seconds=1),
+            )
+            assert "истёк" in (await service.confirm(101, short.pending_id)).content
+            assert await runtime.fetchval("SELECT count(*) FROM agent_reminders") == 2
             async with repository.session(101) as conversation:
                 assert (await conversation.profile()).mode == "review"
         with owner_scope(202):

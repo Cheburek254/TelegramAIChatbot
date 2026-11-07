@@ -46,11 +46,14 @@ from app.orchestration.tool_routes import (
     schedule_query,
     schedule_scope,
     tasks_scope,
+    tool_candidate,
 )
 from app.orchestration.tracing import Trace, TracedLLM, span
 from app.planner import DAY, MOVE_WHEN, local_due
+from app.reminder_requests import UNCLEAR_DELAY, relative_reminder
 from app.response_style import enforce_style, styled_prompt
 from app.timezones import zone
+from app.tool_examples import route_examples
 
 ROUTER_PROMPT = """Ты Router. Только выбери исполнителя.
 Не отвечай на предметный вопрос и не вызывай инструменты.
@@ -128,8 +131,9 @@ KNOWLEDGE_PROMPT = """Отвечай исключительно по предо�
 
 
 REMINDER_PREFIX = re.compile(
-    r"^(?:пожалуйста[, ]+)?(?:напомни\b|(?:можешь|можно)\s+(?:мне\s+)?напомнить\b|"
-    r"(?:создай|добавь|поставь)\s+(?:мне\s+)?напоминание\b)(?:\s+мне\b)?",
+    r"^(?:пожалуйста[, ]+)?(?:напомни(?:-ка)?\b|(?:можешь|можно|не забудь)\s+"
+    r"(?:мне\s+)?напомнить\b|(?:создай|добавь|поставь)\s+(?:мне\s+)?напоминание\b)"
+    r"(?:\s+(?:мне|пожалуйста)\b)*[,:]?",
     re.I,
 )
 REMINDER_DATE = re.compile(
@@ -171,7 +175,8 @@ def explicit_route(text):
 
 
 def current_weather_city(text):
-    match = WEATHER_REQUEST.fullmatch(text.strip())
+    value = re.sub(r"\s+(?:прямо\s+)?сейчас[?!.]*$", "", text.strip(), flags=re.I)
+    match = WEATHER_REQUEST.fullmatch(value)
     if not match:
         return None
     query = " ".join((match["city"] or "").split())
@@ -229,6 +234,7 @@ class Supervisor:
                 fit_messages(
                     [
                         {"role": "system", "content": ROUTER_PROMPT},
+                        *route_examples(),
                         {"role": "user", "content": text},
                     ],
                     self.settings.history_max_tokens,
@@ -474,9 +480,9 @@ class Supervisor:
                 ), None
             if decision.target == "schedule" and decision.intent == "reminder":
                 prefix = REMINDER_PREFIX.match(request.text.strip())
-                match = REMINDER_DATE.fullmatch(request.text.strip()[prefix.end() :].strip())
-                if match:
-                    return await self.prepare_reminder(request, match, policy)
+                body = request.text.strip()[prefix.end() :].strip()
+                if prepared := await self.prepare_reminder(request, body, policy):
+                    return prepared
             profile = await self.store.profile(request.actor_id)
             city = decode(profile["city"]) if profile and profile["city"] else None
             instruction = (
@@ -517,21 +523,40 @@ class Supervisor:
             )
             return result, reply.pending_id
 
-    async def prepare_reminder(self, request, match, policy):
+    async def prepare_reminder(self, request, body, policy):
+        match = REMINDER_DATE.fullmatch(body)
+        try:
+            relative = None if match else relative_reminder(body)
+        except ValueError:
+            return AgentResult(
+                status="needs_clarification",
+                message=UNCLEAR_DELAY,
+                confidence=1.0,
+                facts=EmptyFacts(),
+                used_tools=[],
+                error_code=None,
+            ), None
+        if not match and not relative:
+            return None
         timezone = await self.base.store.timezone(request.actor_id)
         pending = None
         if not timezone:
             message = SAFE_ERRORS["timezone_required"]
         else:
-            date_time = MOVE_WHEN.fullmatch(f"{match['day'] or 'сегодня'} {match['clock']}")
             try:
-                moment = local_due(date_time, request.occurred_at, timezone).astimezone(
-                    zone(timezone)
-                )
-            except ValueError:
+                if relative:
+                    moment = relative.moment(request.occurred_at, zone(timezone))
+                    text = relative.text
+                else:
+                    date_time = MOVE_WHEN.fullmatch(f"{match['day'] or 'сегодня'} {match['clock']}")
+                    moment = local_due(date_time, request.occurred_at, timezone).astimezone(
+                        zone(timezone)
+                    )
+                    text = match["body"]
+            except (ValueError, OverflowError):
                 message = "Укажите однозначные будущие дату и время напоминания."
             else:
-                args = ReminderInput(text=match["body"], remind_at=moment.isoformat()).model_dump()
+                args = ReminderInput(text=text, remind_at=moment.isoformat()).model_dump()
                 policy.validate("add_reminder", args)
                 async with self.base.store.request(
                     request.actor_id, "supervisor:" + str(request.request_id)
@@ -557,7 +582,11 @@ class Supervisor:
                     async with self.assistant.repository.session(owner) as conversation:
                         profile = await conversation.profile()
                     known = explicit_route(text)
-                    if profile.mode in {"translate", "review"} and known is None:
+                    if (
+                        profile.mode in {"translate", "review"}
+                        and known is None
+                        and not tool_candidate(text)
+                    ):
                         async with span("legacy", "dialogue"):
                             completion = await self.legacy.respond(owner, text)
                         reply = AgentReply(completion.content)

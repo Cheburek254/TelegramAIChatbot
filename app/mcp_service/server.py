@@ -25,6 +25,7 @@ from app.mcp_service.weather import ToolFailure, Weather
 from app.planner_store import PlannerStore
 from app.schedule_source import ScheduleSource
 from app.schedule_store import ScheduleStore
+from app.tool_examples import argument_examples
 
 
 def create_server(
@@ -47,7 +48,13 @@ def create_server(
         return [
             types.Tool(
                 name=name,
-                description=DESCRIPTIONS[name],
+                description=DESCRIPTIONS[name]
+                + (
+                    "\nПримеры запросов и аргументов. "
+                    + json.dumps(argument_examples(name, clock(), timezone), ensure_ascii=False)
+                    if name in {"get_tasks", "search_materials"}
+                    else ""
+                ),
                 inputSchema=model.model_json_schema(),
                 outputSchema=OUTPUTS[name].model_json_schema(),
                 annotations=types.ToolAnnotations(
