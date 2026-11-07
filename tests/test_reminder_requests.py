@@ -221,8 +221,8 @@ async def test_unknown_word_forms_reach_model_router_in_every_mode(mode, phrase,
 @pytest.mark.parametrize(
     "phrase,needs_route",
     [
-        ("юзя, напонмни таеки через минутку о лекции", True),
-        ("Напомни таеки через минутку о лекции", False),
+        ("Ассистент, напоммни плиз через минутку про чай", True),
+        ("Напомни плиз через минутку про чай", False),
     ],
 )
 async def test_semantic_reminder_handles_address_and_typos(mode, phrase, needs_route):
@@ -232,7 +232,7 @@ async def test_semantic_reminder_handles_address_and_typos(mode, phrase, needs_r
     route = dict(
         target="schedule", intent="reminder", scope="default", confidence=1.0, reason="request"
     )
-    draft = dict(action="prepare", text="о лекции", delay_seconds=60, remind_at=None)
+    draft = dict(action="prepare", text="про чай", delay_seconds=60, remind_at=None)
     responses = [Completion(json.dumps(draft), "fixture", "fixture")]
     if needs_route:
         responses.insert(0, Completion(json.dumps(route), "fixture", "fixture"))
@@ -249,7 +249,7 @@ async def test_semantic_reminder_handles_address_and_typos(mode, phrase, needs_r
     service.base.store = store
     result = await service.respond(101, phrase, "typos")
     assert result.pending_id
-    assert store.prepared[0][3]["text"] == "о лекции"
+    assert store.prepared[0][3]["text"] == "про чай"
     assert store.prepared[0][5].astimezone(UTC) == NOW + timedelta(minutes=1)
     traces.authorize_action.assert_awaited_once()
     raw.call.assert_not_awaited()

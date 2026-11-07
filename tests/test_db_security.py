@@ -185,13 +185,13 @@ async def test_tools_in_review_use_signed_stdio_and_scoped_database(database, tm
                     "fixture",
                 ),
                 Completion(
-                    '{"action":"prepare","text":"о лекции","delay_seconds":60,"remind_at":null}',
+                    '{"action":"prepare","text":"про чай","delay_seconds":60,"remind_at":null}',
                     "fixture",
                     "fixture",
                 ),
             ]
             semantic = await service.respond(
-                101, "юзя, напонмни таеки через минутку о лекции", "semantic"
+                101, "Ассистент, напоммни плиз через минутку про чай", "semantic"
             )
             assert semantic.pending_id
             assert await runtime.fetchval("SELECT count(*) FROM agent_reminders") == 2

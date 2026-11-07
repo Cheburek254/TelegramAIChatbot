@@ -15,7 +15,7 @@ ROUTES = (
     ("Нужен ли сейчас зонт в Казани?", "lifestyle", "read", "default"),
     ("Напомни мне через пару минут проверить чай", "schedule", "reminder", "default"),
     ("Поставь напоминалочку через минуточку проверить чай", "schedule", "reminder", "default"),
-    ("Юзя, напонмни таеки через минутку о лекции", "schedule", "reminder", "default"),
+    ("Ассистент, напоммни плиз через минутку про чай", "schedule", "reminder", "default"),
     ("Можешь мне напомнить через полтора часа про отчёт?", "schedule", "reminder", "default"),
     ("Найди материал про идемпотентность", "knowledge", "read", "default"),
     ("Что в моих конспектиках говорится про MCP?", "knowledge", "answer", "default"),
@@ -31,8 +31,8 @@ def reminder_examples(now, timezone):
     tomorrow = now.astimezone(zone(timezone)).date() + timedelta(days=1)
     examples = [
         (
-            "Юзя, напонмни таеки через минутку о лекции",
-            {"action": "prepare", "text": "о лекции", "delay_seconds": 60, "remind_at": None},
+            "Ассистент, напоммни плиз через минутку про чай",
+            {"action": "prepare", "text": "про чай", "delay_seconds": 60, "remind_at": None},
         ),
         (
             "Слушай, про таблетки через полчаса мне маякни",
