@@ -8,11 +8,11 @@ import pytest
 from app.assistant import Assistant
 from app.config import Settings
 from app.mcp_service.contracts import INPUTS
-from app.orchestration.contracts import RouteDecision
+from app.orchestration.contracts import ReminderDraft, RouteDecision
 from app.orchestration.supervisor import Supervisor, current_weather_city, explicit_route
 from app.reminder_requests import relative_reminder
 from app.timezones import reminder_time, zone
-from app.tool_examples import argument_examples, route_examples
+from app.tool_examples import argument_examples, reminder_examples, route_examples
 from tests.fakes import MemoryRepository
 from tests.test_agent import FakeStore
 from tests.test_supervisor import MemoryAssistantStore, bridge
@@ -102,6 +102,9 @@ def test_few_shots_cover_every_tool_and_have_valid_arguments():
     }
     assert current_weather_city("Что с погодой в Питере прямо сейчас?") == "Санкт-Петербург, Россия"
     assert explicit_route("Перечисли мои учебные материалы").target == "knowledge"
+    for message in reminder_examples(NOW, "Europe/Moscow"):
+        if message["role"] == "assistant":
+            ReminderDraft.model_validate_json(message["content"])
 
 
 @pytest.mark.parametrize("mode", ["study", "review", "translate"])
@@ -212,3 +215,70 @@ async def test_unknown_word_forms_reach_model_router_in_every_mode(mode, phrase,
     decision = service.specialist.await_args.args[1]
     assert (decision.target, decision.scope) == (target, scope)
     assert repository.profiles[101].mode == mode
+
+
+@pytest.mark.parametrize("mode", ["study", "review", "translate"])
+@pytest.mark.parametrize(
+    "phrase,needs_route",
+    [
+        ("юзя, напонмни таеки через минутку о лекции", True),
+        ("Напомни таеки через минутку о лекции", False),
+    ],
+)
+async def test_semantic_reminder_handles_address_and_typos(mode, phrase, needs_route):
+    from app.llm import Completion
+    from app.repository import Profile
+
+    route = dict(
+        target="schedule", intent="reminder", scope="default", confidence=1.0, reason="request"
+    )
+    draft = dict(action="prepare", text="о лекции", delay_seconds=60, remind_at=None)
+    responses = [Completion(json.dumps(draft), "fixture", "fixture")]
+    if needs_route:
+        responses.insert(0, Completion(json.dumps(route), "fixture", "fixture"))
+    llm = Mock(complete=AsyncMock(side_effect=responses))
+    repository = MemoryRepository()
+    repository.profiles[101] = Profile(mode=mode)
+    settings = Settings(bot_token="unused", postgres_password="unused")
+    raw, traces = bridge(), MemoryAssistantStore()
+    service = Supervisor(
+        settings, traces, Assistant(settings, repository, llm), raw, clock=lambda: NOW
+    )
+    store = FakeStore()
+    store.timezone = AsyncMock(return_value="Europe/Moscow")
+    service.base.store = store
+    result = await service.respond(101, phrase, "typos")
+    assert result.pending_id
+    assert store.prepared[0][3]["text"] == "о лекции"
+    assert store.prepared[0][5].astimezone(UTC) == NOW + timedelta(minutes=1)
+    traces.authorize_action.assert_awaited_once()
+    raw.call.assert_not_awaited()
+    assert repository.profiles[101].mode == mode
+
+
+@pytest.mark.parametrize("action", ["ignore", "clarify"])
+async def test_semantic_reminder_without_clear_request_never_prepares(action):
+    from app.llm import Completion
+
+    route = dict(
+        target="schedule", intent="reminder", scope="default", confidence=1.0, reason="uncertain"
+    )
+    draft = dict(action=action, text=None, delay_seconds=None, remind_at=None)
+    llm = Mock(
+        complete=AsyncMock(
+            side_effect=[
+                Completion(json.dumps(route), "fixture", "fixture"),
+                Completion(json.dumps(draft), "fixture", "fixture"),
+            ]
+        )
+    )
+    settings = Settings(bot_token="unused", postgres_password="unused")
+    raw, traces = bridge(), MemoryAssistantStore()
+    service = Supervisor(settings, traces, Assistant(settings, MemoryRepository(), llm), raw)
+    store = FakeStore()
+    store.timezone = AsyncMock(return_value="Europe/Moscow")
+    service.base.store = store
+    result = await service.respond(101, "Это пример текста с напоминанием", "unclear")
+    assert result.pending_id is None and not store.prepared
+    traces.authorize_action.assert_not_awaited()
+    raw.call.assert_not_awaited()

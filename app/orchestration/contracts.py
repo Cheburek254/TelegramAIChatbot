@@ -22,6 +22,20 @@ class RouteDecision(Contract):
     reason: str = Field(min_length=1, max_length=240)
 
 
+class ReminderDraft(Contract):
+    action: Literal["prepare", "clarify", "ignore"]
+    text: str | None = Field(min_length=1, max_length=500)
+    delay_seconds: int | None = Field(ge=1, le=2147483647)
+    remind_at: str | None = Field(max_length=100)
+
+    @field_validator("remind_at")
+    @classmethod
+    def aware_time(cls, value):
+        if value is not None and datetime.fromisoformat(value).utcoffset() is None:
+            raise ValueError("timezone_required")
+        return value
+
+
 class AgentRequest(Contract):
     request_id: uuid.UUID
     trace_id: uuid.UUID

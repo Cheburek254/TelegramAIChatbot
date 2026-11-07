@@ -171,10 +171,6 @@ TERM = re.compile(
 )
 SEPARATOR = re.compile(r"(?:\s*(?:,|и)\s*|\s+)")
 THROUGH = re.compile(r"\bчерез\s+", re.I)
-UNCLEAR_DELAY = (
-    "Уточните интервал и текст. Например, «Напомни через 2 минуты проверить чай».\n\n"
-    "«Пару» считаю как 2. Для «несколько» или «скоро» укажите точное время."
-)
 
 
 @dataclass(frozen=True)

@@ -1,7 +1,7 @@
 """Synthetic few-shot examples. Relative dates always use the trusted clock."""
 
 import json
-from datetime import UTC, timedelta
+from datetime import UTC, datetime, time, timedelta
 
 from app.timezones import zone
 
@@ -15,6 +15,7 @@ ROUTES = (
     ("Нужен ли сейчас зонт в Казани?", "lifestyle", "read", "default"),
     ("Напомни мне через пару минут проверить чай", "schedule", "reminder", "default"),
     ("Поставь напоминалочку через минуточку проверить чай", "schedule", "reminder", "default"),
+    ("Юзя, напонмни таеки через минутку о лекции", "schedule", "reminder", "default"),
     ("Можешь мне напомнить через полтора часа про отчёт?", "schedule", "reminder", "default"),
     ("Найди материал про идемпотентность", "knowledge", "read", "default"),
     ("Что в моих конспектиках говорится про MCP?", "knowledge", "answer", "default"),
@@ -24,6 +25,64 @@ ROUTES = (
     ("Что такое дедлайн?", "legacy", "legacy", "default"),
     ("Подготовь меня к завтра", "clarify", "clarify", "default"),
 )
+
+
+def reminder_examples(now, timezone):
+    tomorrow = now.astimezone(zone(timezone)).date() + timedelta(days=1)
+    examples = [
+        (
+            "Юзя, напонмни таеки через минутку о лекции",
+            {"action": "prepare", "text": "о лекции", "delay_seconds": 60, "remind_at": None},
+        ),
+        (
+            "Слушай, про таблетки через полчаса мне маякни",
+            {
+                "action": "prepare",
+                "text": "принять таблетки",
+                "delay_seconds": 1800,
+                "remind_at": None,
+            },
+        ),
+        (
+            "Через час и пятнадцать минут дёрни меня насчёт отчёта",
+            {
+                "action": "prepare",
+                "text": "проверить отчёт",
+                "delay_seconds": 4500,
+                "remind_at": None,
+            },
+        ),
+        (
+            "Юзя, завтра к 18:00 маякни мне про отчёт",
+            {
+                "action": "prepare",
+                "text": "про отчёт",
+                "delay_seconds": None,
+                "remind_at": datetime.combine(tomorrow, time(18), zone(timezone)).isoformat(),
+            },
+        ),
+        (
+            "Напомни через несколько минут",
+            {"action": "clarify", "text": None, "delay_seconds": None, "remind_at": None},
+        ),
+        (
+            "Каждый день в 18:00 напоминай о тренировке",
+            {"action": "clarify", "text": None, "delay_seconds": None, "remind_at": None},
+        ),
+        (
+            "Переведи фразу «через минутку напомни о лекции»",
+            {"action": "ignore", "text": None, "delay_seconds": None, "remind_at": None},
+        ),
+    ]
+    messages = []
+    for text, value in examples:
+        messages.extend(
+            [
+                {"role": "user", "content": text},
+                {"role": "assistant", "content": json.dumps(value, ensure_ascii=False)},
+            ]
+        )
+    return messages
 
 
 def route_examples():

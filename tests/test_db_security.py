@@ -14,7 +14,7 @@ from app.db import create_pool, job_owners, owner_scope
 from app.db_security import RUNTIME, TABLES, install
 from app.itmo_auth_store import AuthStore
 from app.itmo_login import LoginError
-from app.llm import LLMError
+from app.llm import Completion, LLMError
 from app.mcp_client import MCPBridge, MCPFailure
 from app.orchestration.store import AssistantStore
 from app.orchestration.supervisor import Supervisor
@@ -177,6 +177,28 @@ async def test_tools_in_review_use_signed_stdio_and_scoped_database(database, tm
             )
             assert "истёк" in (await service.confirm(101, short.pending_id)).content
             assert await runtime.fetchval("SELECT count(*) FROM agent_reminders") == 2
+            llm.complete.side_effect = [
+                Completion(
+                    '{"target":"schedule","intent":"reminder","scope":"default",'
+                    '"confidence":1.0,"reason":"request"}',
+                    "fixture",
+                    "fixture",
+                ),
+                Completion(
+                    '{"action":"prepare","text":"о лекции","delay_seconds":60,"remind_at":null}',
+                    "fixture",
+                    "fixture",
+                ),
+            ]
+            semantic = await service.respond(
+                101, "юзя, напонмни таеки через минутку о лекции", "semantic"
+            )
+            assert semantic.pending_id
+            assert await runtime.fetchval("SELECT count(*) FROM agent_reminders") == 2
+            with owner_scope(202):
+                assert (await service.confirm(202, semantic.pending_id)).pending_id is None
+            assert "создано" in (await service.confirm(101, semantic.pending_id)).content
+            assert await runtime.fetchval("SELECT count(*) FROM agent_reminders") == 3
             async with repository.session(101) as conversation:
                 assert (await conversation.profile()).mode == "review"
         with owner_scope(202):
@@ -189,7 +211,7 @@ async def test_tools_in_review_use_signed_stdio_and_scoped_database(database, tm
                 not in (await service.respond(202, "Покажи материалы", "catalog")).content
             )
             assert await runtime.fetchval("SELECT count(*) FROM agent_reminders") == 0
-        assert llm.complete.await_count == 1  # Only the material summary was attempted.
+        assert llm.complete.await_count == 3
     finally:
         await mcp.close()
         if runtime:
