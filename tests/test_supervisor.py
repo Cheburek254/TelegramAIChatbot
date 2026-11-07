@@ -317,8 +317,6 @@ async def test_previous_modes_still_work_and_duplicate_update_reuses_reply(mode)
                 Completion(json.dumps(route), "fake", "fake"),
                 Completion("Объяснение", "fake", "fake"),
             ]
-            if mode == "study"
-            else [Completion("Ответ", "fake", "fake")]
         )
     )
     assistant = Assistant(Settings(bot_token="unused", postgres_password="unused"), repository, llm)
@@ -328,8 +326,7 @@ async def test_previous_modes_still_work_and_duplicate_update_reuses_reply(mode)
     count = llm.complete.await_count
     assert (await service.respond(1, "Обычный запрос", "message:1")).content == first.content
     assert llm.complete.await_count == count
-    if mode != "study":
-        assert llm.complete.await_count == 1
+    assert llm.complete.await_count == 2
 
 
 async def test_unknown_or_low_confidence_route_clarifies_without_tools():

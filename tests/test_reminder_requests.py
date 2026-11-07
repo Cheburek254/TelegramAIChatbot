@@ -110,6 +110,7 @@ def test_few_shots_cover_every_tool_and_have_valid_arguments():
     [
         ("Напомни мне через пару минут проверить чай", 2),
         ("Напомни мне через минуточку проверить чай", 1),
+        ("Поставь мне напоминалочку через минутку проверить чай", 1),
     ],
 )
 async def test_relative_reminder_prepares_exact_time_without_llm_or_mcp_write(
@@ -166,3 +167,48 @@ async def test_free_form_tools_in_review_use_router_examples():
     assert any(
         message["content"] == "Напомни мне через пару минут проверить чай" for message in messages
     )
+
+
+@pytest.mark.parametrize("mode", ["study", "review", "translate"])
+@pytest.mark.parametrize(
+    "phrase,target,scope",
+    [
+        ("Как там погодка в Питере?", "lifestyle", "default"),
+        ("Что у меня по парочкам завтра?", "schedule", "day"),
+        ("Глянь мои тасочки", "tasks", "all"),
+        ("Поищи в конспектиках про транзакции", "knowledge", "default"),
+        ("Какие конспектики у меня загружены?", "knowledge", "all"),
+    ],
+)
+async def test_unknown_word_forms_reach_model_router_in_every_mode(mode, phrase, target, scope):
+    from app.llm import Completion
+    from app.orchestration.contracts import AgentResult, EmptyFacts
+    from app.repository import Profile
+
+    route = dict(target=target, intent="read", scope=scope, confidence=1.0, reason="colloquial")
+    llm = Mock(complete=AsyncMock(return_value=Completion(json.dumps(route), "fixture", "fixture")))
+    repository = MemoryRepository()
+    repository.profiles[101] = Profile(mode=mode)
+    settings = Settings(bot_token="unused", postgres_password="unused")
+    service = Supervisor(
+        settings, MemoryAssistantStore(), Assistant(settings, repository, llm), bridge()
+    )
+    service.base.store.timezone = AsyncMock(return_value="Europe/Moscow")
+    service.specialist = AsyncMock(
+        return_value=(
+            AgentResult(
+                status="success",
+                message="Проверенный ответ",
+                confidence=1.0,
+                facts=EmptyFacts(),
+                used_tools=[],
+                error_code=None,
+            ),
+            None,
+        )
+    )
+    reply = await service.respond(101, phrase, "colloquial")
+    assert reply.content == "Проверенный ответ"
+    decision = service.specialist.await_args.args[1]
+    assert (decision.target, decision.scope) == (target, scope)
+    assert repository.profiles[101].mode == mode

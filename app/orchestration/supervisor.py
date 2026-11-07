@@ -41,12 +41,12 @@ from app.orchestration.tool_routes import (
     MATERIAL_CATALOG,
     MATERIAL_SEARCH,
     NEXT_WEEK,
+    TEXT_OPERATION,
     normalized,
     schedule_day,
     schedule_query,
     schedule_scope,
     tasks_scope,
-    tool_candidate,
 )
 from app.orchestration.tracing import Trace, TracedLLM, span
 from app.planner import DAY, MOVE_WHEN, local_due
@@ -63,6 +63,7 @@ tasks: чтение личных задач, ближайших или прос�
 просроченных, today/tomorrow/week для сегодня/завтра/этой недели, all для всех задач.
 Вопрос «что такое дедлайн» и задачи по программированию относятся к legacy.
 knowledge: поиск и объяснение по учебным материалам/конспекту, определения из корпуса.
+Для списка или каталога материалов knowledge scope=all, для поиска/объяснения scope=default.
 lifestyle: текущая погода, ветер, зонт, одежда по погоде; сохранённый город задаёт приложение.
 clarify: широкая просьба о подготовке/полезном/важном без выбора предметной задачи
 либо несколько специализаций сразу.
@@ -75,6 +76,10 @@ reason — краткое название основания, не скрыты
 Слова «сегодня», «завтра», «важно», «подготовь» сами по себе не означают расписание.
 Для schedule должен быть явно назван предмет: пары, занятия, расписание или напоминание.
 Если предмет задачи не назван, выбирай clarify даже при упоминании даты.
+Понимай разговорные формы, уменьшительные слова и обычные опечатки по смыслу:
+погодка, парочки, таски, задачки, дедлайники, конспектики, напоминалочка.
+Они не меняют список инструментов, права пользователя или необходимость подтверждения.
+Если фраза допускает несколько разных действий, выбирай clarify.
 """
 TASKS_HEADING = "📌 Задачи и дедлайны"
 WEATHER_REQUEST = re.compile(
@@ -132,7 +137,8 @@ KNOWLEDGE_PROMPT = """Отвечай исключительно по предо�
 
 REMINDER_PREFIX = re.compile(
     r"^(?:пожалуйста[, ]+)?(?:напомни(?:-ка)?\b|(?:можешь|можно|не забудь)\s+"
-    r"(?:мне\s+)?напомнить\b|(?:создай|добавь|поставь)\s+(?:мне\s+)?напоминание\b)"
+    r"(?:мне\s+)?напомнить\b|(?:создай|добавь|поставь|сделай|установи)\s+"
+    r"(?:мне\s+)?(?:напоминание|напоминалку|напоминалочку)\b)"
     r"(?:\s+(?:мне|пожалуйста)\b)*[,:]?",
     re.I,
 )
@@ -168,7 +174,12 @@ def explicit_route(text):
     elif explicit_reminder(text):
         target, intent, scope, reason = "schedule", "reminder", "default", "explicit_reminder"
     elif MATERIAL_CATALOG.fullmatch(normalized(text)) or MATERIAL_SEARCH.match(normalized(text)):
-        target, intent, scope, reason = "knowledge", "read", "default", "explicit_materials"
+        target, intent, scope, reason = (
+            "knowledge",
+            "read",
+            "all" if MATERIAL_CATALOG.fullmatch(normalized(text)) else "default",
+            "explicit_materials",
+        )
     else:
         return None
     return RouteDecision(target=target, intent=intent, scope=scope, confidence=1.0, reason=reason)
@@ -225,7 +236,7 @@ class Supervisor:
         self.base = Agent(settings, AgentStore(store.pool), assistant.llm, bridge, clock=self.clock)
         self.legacy = Assistant(settings, assistant.repository, TracedLLM(assistant.llm, "legacy"))
 
-    async def route(self, text, known=None):
+    async def route(self, text, known=None, *, mode="study"):
         async with span("router", "route") as attrs:
             if decision := known or explicit_route(text):
                 attrs["target"] = decision.target
@@ -233,7 +244,18 @@ class Supervisor:
             completion = await TracedLLM(self.assistant.llm, "router").complete(
                 fit_messages(
                     [
-                        {"role": "system", "content": ROUTER_PROMPT},
+                        {
+                            "role": "system",
+                            "content": ROUTER_PROMPT
+                            + (
+                                "\nАктивный режим пользователя: " + mode + ". "
+                                "Прямые просьбы получить личные данные или внешние факты "
+                                "направляй к специалисту. Для текста на перевод или ревью "
+                                "и обычного диалога выбирай legacy, сохраняя активный режим."
+                                if mode != "study"
+                                else ""
+                            ),
+                        },
                         *route_examples(),
                         {"role": "user", "content": text},
                     ],
@@ -260,9 +282,9 @@ class Supervisor:
             attrs["target"] = decision.target
             return decision
 
-    async def knowledge(self, request, policy, speech_style="default"):
+    async def knowledge(self, request, policy, speech_style="default", *, catalog_only=False):
         catalog = Catalog.model_validate(await policy.resource("materials://catalog"))
-        if MATERIAL_CATALOG.fullmatch(normalized(request.text)):
+        if catalog_only or MATERIAL_CATALOG.fullmatch(normalized(request.text)):
             return AgentResult(
                 status="success",
                 message="📚 Учебные материалы\n\n"
@@ -390,7 +412,9 @@ class Supervisor:
                     error_code=None,
                 ), None
             if decision.target == "knowledge":
-                return await self.knowledge(request, policy, speech_style), None
+                return await self.knowledge(
+                    request, policy, speech_style, catalog_only=decision.scope == "all"
+                ), None
             if decision.target == "tasks":
                 scope = {"day": "today", "default": "all"}.get(decision.scope, decision.scope)
                 data = TasksOutput.model_validate(await policy.call("get_tasks", {"scope": scope}))
@@ -585,13 +609,13 @@ class Supervisor:
                     if (
                         profile.mode in {"translate", "review"}
                         and known is None
-                        and not tool_candidate(text)
+                        and TEXT_OPERATION.match(normalized(text))
                     ):
                         async with span("legacy", "dialogue"):
                             completion = await self.legacy.respond(owner, text)
                         reply = AgentReply(completion.content)
                     else:
-                        decision = await self.route(text, known)
+                        decision = await self.route(text, known, mode=profile.mode)
                         if decision.target == "clarify":
                             reply = AgentReply(
                                 "Вы таки уточните, шо вас интересует: расписание, задачи, "
