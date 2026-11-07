@@ -35,6 +35,18 @@ NOW = datetime(2026, 10, 24, 23, 59, 30, tzinfo=UTC)
         ("через 0,5 минуты проверить чай", 30),
         ("проверить чай через 10 секунд", 10),
         ("через сутки проверить чай", 86400),
+        ("через минутка проверить чай", 60),
+        ("через минутку проверить чай", 60),
+        ("через минуточку проверить чай", 60),
+        ("через одну минутку проверить чай", 60),
+        ("через пару минуточек проверить чай", 120),
+        ("через секундочку проверить чай", 1),
+        ("через 10 секундочек проверить чай", 10),
+        ("через часик проверить чай", 3600),
+        ("через часок проверить чай", 3600),
+        ("через полтора часика проверить чай", 5400),
+        ("через денёк проверить чай", 86400),
+        ("через недельку проверить чай", 604800),
     ],
 )
 def test_relative_duration_and_body(body, seconds):
@@ -93,7 +105,16 @@ def test_few_shots_cover_every_tool_and_have_valid_arguments():
 
 
 @pytest.mark.parametrize("mode", ["study", "review", "translate"])
-async def test_relative_reminder_prepares_exact_time_without_llm_or_mcp_write(mode):
+@pytest.mark.parametrize(
+    "phrase,minutes",
+    [
+        ("Напомни мне через пару минут проверить чай", 2),
+        ("Напомни мне через минуточку проверить чай", 1),
+    ],
+)
+async def test_relative_reminder_prepares_exact_time_without_llm_or_mcp_write(
+    mode, phrase, minutes
+):
     from app.repository import Profile
 
     repository = MemoryRepository()
@@ -107,18 +128,18 @@ async def test_relative_reminder_prepares_exact_time_without_llm_or_mcp_write(mo
     pending_store = FakeStore()
     pending_store.timezone = AsyncMock(return_value="Europe/Moscow")
     service.base.store = pending_store
-    result = await asyncio.wait_for(
-        service.respond(101, "Напомни мне через пару минут проверить чай", "relative"), 5
+    result = await asyncio.wait_for(service.respond(101, phrase, "relative"), 5)
+    expected = NOW + timedelta(minutes=minutes)
+    assert (
+        result.pending_id
+        and expected.astimezone(zone("Europe/Moscow")).strftime("%H:%M:%S") in result.content
     )
-    assert result.pending_id and "03:01:30" in result.content
     prepared = pending_store.prepared[0]
     assert prepared[3]["text"] == "проверить чай"
-    assert prepared[5].astimezone(UTC) == NOW + timedelta(minutes=2)
+    assert prepared[5].astimezone(UTC) == expected
     llm.complete.assert_not_awaited()
     raw.call.assert_not_awaited()
-    assert (
-        await service.respond(101, "Напомни мне через пару минут проверить чай", "relative")
-    ).pending_id == result.pending_id
+    assert (await service.respond(101, phrase, "relative")).pending_id == result.pending_id
     assert len(pending_store.prepared) == 1
     assert repository.profiles[101].mode == mode
 

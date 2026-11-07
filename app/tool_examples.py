@@ -14,6 +14,7 @@ ROUTES = (
     ("Что с погодой в Питере прямо сейчас?", "lifestyle", "read", "default"),
     ("Нужен ли сейчас зонт в Казани?", "lifestyle", "read", "default"),
     ("Напомни мне через пару минут проверить чай", "schedule", "reminder", "default"),
+    ("Напомни через минуточку проверить чай", "schedule", "reminder", "default"),
     ("Можешь мне напомнить через полтора часа про отчёт?", "schedule", "reminder", "default"),
     ("Найди материал про идемпотентность", "knowledge", "read", "default"),
     ("Что в моём конспекте говорится про MCP?", "knowledge", "answer", "default"),
@@ -70,6 +71,15 @@ def argument_examples(name, now, timezone):
             ("Поищи в моём конспекте про MCP", {"query": "MCP", "limit": 5}),
         ],
         "add_reminder": [
+            (
+                "Напомни через минутку проверить чай",
+                {
+                    "text": "проверить чай",
+                    "remind_at": (now.astimezone(UTC) + timedelta(minutes=1))
+                    .astimezone(zone(timezone))
+                    .isoformat(),
+                },
+            ),
             (
                 "Напомни мне через пару минут проверить чай",
                 {
